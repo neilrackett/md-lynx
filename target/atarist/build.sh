@@ -20,6 +20,20 @@ target_firmware="target_firmware.h"
 # a hand-written, version-controlled file. The Makefile assembles it
 # alongside main.s and userfw.s like any other source.)
 
+# Stage the Xpad ABI equates into the mounted source tree. stcmd runs
+# `docker run -v $ST_WORKING_FOLDER:/tmp`, mounting ONLY this folder, so
+# vasm inside the container cannot reach lib/xpad at the repository root
+# and no -I would help. Copying here keeps the submodule as the single
+# source of truth -- src/inc/xpad.inc is a build artifact, refreshed on
+# every build and gitignored, so it can never go stale against the
+# submodule the way a committed vendored copy would.
+xpad_inc="$working_folder/../../lib/xpad/src/xpad.inc"
+if [ ! -f "$xpad_inc" ]; then
+    echo "ERROR: $xpad_inc missing -- run: git submodule update --init --recursive"
+    exit 1
+fi
+cp "$xpad_inc" "$working_folder/src/inc/xpad.inc"
+
 # ST_WORKING_FOLDER=$working_folder/configurator stcmd make $build_type
 # STCMD_NO_TTY=1 keeps docker working when invoked from non-TTY contexts
 # (CI, sub-shells, build wrappers). Without it stcmd's `-it` flag aborts

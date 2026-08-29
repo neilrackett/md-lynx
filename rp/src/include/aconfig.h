@@ -13,6 +13,11 @@
 #include "debug.h"
 #include "settings.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #define ACONFIG_PARAM_FOLDER "FOLDER"
 #define ACONFIG_PARAM_MODE "MODE"
 
@@ -69,5 +74,9 @@ int aconfig_init(const char *currentAppId);
  * application
  */
 SettingsContext *aconfig_getContext(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif  // ACONFIG_H

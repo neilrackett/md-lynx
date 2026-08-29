@@ -35,13 +35,18 @@
 // should be modified when adding new features to the application.
 
 int main() {
-  // Set the clock frequency. Keep in mind that if you are managing remote
-  // commands you should overclock the CPU to >=225MHz
-  set_sys_clock_khz(RP2040_CLOCK_FREQ_KHZ, true);
-
-  // Set the voltage. Be cautios with this. I don't think it's possible to
-  // damage the hardware, but it's possible to make the hardware unstable.
+  // Raise the core voltage BEFORE the clock -- the chip must never run
+  // the higher frequency at the lower voltage, even transiently. (The
+  // template's original order only worked because it asked for the
+  // power-on default 1.10 V.) Be cautious with the voltage: I don't
+  // think it's possible to damage the hardware, but it's possible to
+  // make it unstable.
   vreg_set_voltage(RP2040_VOLTAGE);
+  sleep_ms(10);  // Let the regulator settle at the new voltage.
+
+  // Set the clock frequency. Keep in mind that if you are managing remote
+  // commands you should overclock the CPU to >=225MHz.
+  set_sys_clock_khz(RP2040_CLOCK_FREQ_KHZ, true);
 
   // A note about outputting debug information through the UART. It's not
   // recommended to output debug information through the UART in a production
@@ -78,7 +83,7 @@ int main() {
   unsigned int globalLookupFlashLength = FLASH_SECTOR_SIZE;
   unsigned int globalConfigFlashLength = FLASH_SECTOR_SIZE;
   unsigned int romInRamLength = ROM_SIZE_BYTES * ROM_BANKS;
-  unsigned int romTempLength = ROM_SIZE_BYTES * ROM_BANKS;
+  unsigned int romTempLength = rom_temp_size();
 
   DPRINTF("Flash start: 0x%X, length: %u bytes\n",
           (unsigned int)&__flash_binary_start, flashLength);
@@ -106,6 +111,8 @@ int main() {
     DPRINTF("SELECT held at power-on. Jump to Booster application\n");
     reset_jump_to_booster();
   }
+
+  DPRINT_HEAP();  // Boot heap diagnosis -- see debug.h.
 
   // Load the global configuration parameters
   int err = gconfig_init(CURRENT_APP_UUID_KEY);

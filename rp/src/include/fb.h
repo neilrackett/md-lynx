@@ -54,21 +54,9 @@ extern const struct FB_MODE fb_mode_320x200;
  */
 int fb_init(const struct FB_MODE *mode);
 
-/** @brief Fill the cartridge framebuffer with 0xFF (solid black in
- *         the default TOS low-res palette). */
-void fb_clear(void);
-
-/** @brief Render the static parts of the template's boot UI (centered
- *         title + ESC hint). Called once by fb_init; the dynamic parts
- *         live in fb_render_frame. */
-void fb_render_static(void);
-
-/** @brief Render the dynamic parts of the template's boot UI: erase
- *         and redraw only the frame-counter row and the marquee row.
- *         Static title is left intact so we don't churn the parts of
- *         the FB the m68k is currently reading. Safe to call from the
- *         main loop at any cadence. */
-void fb_render_frame(void);
+/* fb_init paints a one-frame boot splash internally; the app owns
+ * every frame after that, so the splash renderers are static to fb.c
+ * rather than public API. */
 
 /** @brief Publish the current chunked buffer to the cart framebuffer,
  *         synchronized to the Atari's 50 Hz VBL, tear-free.
@@ -97,12 +85,6 @@ void fb_publish(void);
  *         waiting for the VBL ack, so IKBD/ESC stay responsive during
  *         the wait. */
 void fb_pump_rom3(void);
-
-/** @brief Microseconds the most recent fb_publish() spent in the
- *         chunky-to-planar conversion (dual-core c2p + chunk-reversed
- *         memcpy). Updated every fb_publish(); stale-by-one is fine
- *         for an on-screen timing readout. */
-uint32_t fb_last_convert_us(void);
 
 #ifdef __cplusplus
 }

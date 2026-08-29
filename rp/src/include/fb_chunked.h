@@ -33,8 +33,29 @@ extern "C" {
 #define FB_CHUNKED_SIZE (FB_CHUNKED_W * FB_CHUNKED_H)
 
 /* Storage lives in regular RP RAM (`RAM` region at 0x20000000), not the
- * cart-mirrored ROM_IN_RAM region. Apps poke pixels here directly. */
-extern uint8_t fb_chunked_buffer[FB_CHUNKED_SIZE];
+ * cart-mirrored ROM_IN_RAM region. Apps poke pixels here directly.
+ *
+ * MD/Lynx: the pixel array is wrapped in a struct with guard bands so the
+ * Lynx renderer can write 2x-scaled scanlines straight into it, saving a
+ * 16 KB intermediate buffer this port cannot afford. Mikey emits 102
+ * scanlines at a 640-byte pitch and the first and last of them fall
+ * outside the ST's 200 visible rows (that is the "crop 2 pixels top and
+ * bottom of 320x204" the port is built around), so one scanline of slack
+ * is needed below the buffer and half a one above it. Nothing ever reads
+ * the guards -- the chunky-to-planar pass only sees `pixels`.
+ *
+ * `fb_chunked_buffer` is a macro, not a variable, so it still behaves as
+ * a `uint8_t[FB_CHUNKED_SIZE]` for indexing, address-of and sizeof. */
+#define FB_CHUNKED_GUARD_LO 640u
+#define FB_CHUNKED_GUARD_HI 384u
+
+struct FB_CHUNKED_STORE {
+  uint8_t guard_lo[FB_CHUNKED_GUARD_LO];
+  uint8_t pixels[FB_CHUNKED_SIZE];
+  uint8_t guard_hi[FB_CHUNKED_GUARD_HI];
+};
+extern struct FB_CHUNKED_STORE fb_chunked_store;
+#define fb_chunked_buffer (fb_chunked_store.pixels)
 
 /* Launch Core 1 with the chunky-to-planar worker loop. Must be called
  * exactly once, from Core 0, before the first call to
@@ -54,6 +75,14 @@ void fb_chunked_init(void);
 typedef void (*fb_core1_job_t)(void *arg);
 void __not_in_flash_func(fb_core1_dispatch)(fb_core1_job_t job, void *arg);
 void __not_in_flash_func(fb_core1_wait)(void);
+
+/* Hold Core 1 in a RAM-resident spin so Core 0 can erase or program
+ * flash. Core 1's idle FIFO pop is a flash-resident SDK call and would
+ * fault with XIP disabled. Park, do the flash work with interrupts off,
+ * unpark; the pair counts as one dispatch/wait, so it must not straddle
+ * an fb_publish(). */
+void fb_core1_park(void);
+void fb_core1_unpark(void);
 
 /* Fill the entire chunked buffer with a single palette index. */
 void fb_chunked_clear(uint8_t color);

@@ -44,7 +44,7 @@
  * (real SDK calls with barriers), so -O3 is safe. */
 #pragma GCC optimize("O3")
 
-uint8_t fb_chunked_buffer[FB_CHUNKED_SIZE] __attribute__((aligned(4)));
+struct FB_CHUNKED_STORE fb_chunked_store __attribute__((aligned(4)));
 
 /* Asm worker (fb_chunked_asm.S). Processes pixels in [src, src_end)
  * into the planar layout starting at dst. */
@@ -100,8 +100,36 @@ void fb_chunked_init(void) {
   multicore_launch_core1(fb_core1_loop);
 }
 
+/* Hold Core 1 somewhere RAM-resident so Core 0 can write flash.
+ *
+ * Core 1 normally waits in fb_core1_loop's FIFO pop, and that pop is a
+ * flash-resident SDK call -- executing it with XIP disabled would fault.
+ * The park job spins on a flag in RAM instead. Both the fact that the
+ * idle loop lives in flash and the one-dispatch-one-wait protocol are
+ * this module's business, so the mechanism lives here rather than in
+ * whichever caller happens to need to erase a sector.
+ *
+ * Pairs like any other dispatch: park, do the flash work with interrupts
+ * off, unpark. */
+static volatile uint32_t s_core1_parked;
+
+static void __not_in_flash_func(fb_core1_park_job)(void *arg) {
+  volatile uint32_t *flag = (volatile uint32_t *)arg;
+  while (*flag) tight_loop_contents();
+}
+
+void fb_core1_park(void) {
+  s_core1_parked = 1;
+  fb_core1_dispatch(fb_core1_park_job, (void *)&s_core1_parked);
+}
+
+void fb_core1_unpark(void) {
+  s_core1_parked = 0;
+  fb_core1_wait();
+}
+
 void fb_chunked_clear(uint8_t color) {
-  memset(fb_chunked_buffer, color, sizeof(fb_chunked_buffer));
+  memset(fb_chunked_buffer, color, FB_CHUNKED_SIZE);
 }
 
 void __not_in_flash_func(fb_transpose)(void) {

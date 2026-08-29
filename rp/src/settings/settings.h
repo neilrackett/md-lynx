@@ -20,6 +20,11 @@
  #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
+
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+
  
  /**
   * @brief Debug macro for printing formatted debug messages.
@@ -224,5 +229,9 @@
  int settings_put_integer(SettingsContext *ctx,
                           const char *key, int value);
  
+ #ifdef __cplusplus
+ }
+ #endif
+
  #endif  // SETTINGS_H
  

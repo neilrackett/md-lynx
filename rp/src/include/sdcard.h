@@ -14,6 +14,11 @@
 #include "gconfig.h"
 #include "sd_card.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 typedef enum {
   SDCARD_INIT_OK = 0,
   SDCARD_INIT_ERROR = -1,
@@ -139,5 +144,9 @@ sd_card_t *sd_get_by_num(size_t num);
 size_t spi_get_num();
 spi_t *spi_get_by_num(size_t num);
 // NOLINTEND(readability-identifier-naming)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif  // SDCARD_H

@@ -49,6 +49,30 @@ extern "C" {
  * does not zero on entry.
  *
  * Called from the main loop at ~50 Hz; must not block. */
+
+/* Audio back-end, chosen at runtime from the m68k's _SND detection
+ * (reported over the cart bus; audio_consume_rom3_sample decodes the
+ * report out of the ROM3 ring). Governs the per-VBL
+ * refill size and the format the fill callback produces. Defaults to
+ * SILENT until the first report arrives. */
+typedef enum {
+  AUDIO_MODE_SILENT = 0, /* zeros -- pre-report / no audio    */
+  AUDIO_MODE_YM,         /* 224 B/VBL: 112 (vA,vB) pairs      */
+  AUDIO_MODE_DMA         /* 500 B/VBL: 500 signed PCM samples */
+} audio_mode_t;
+
+/* Set the back-end (idempotent). Called by the cart-bus capability
+ * decoder; changes the refill size the fill callback is asked for. */
+void audio_set_mode(audio_mode_t mode);
+
+/* Current back-end, for the fill callback to pick its output format. */
+audio_mode_t audio_get_mode(void);
+
+/* commemul ring consumer. Passed each captured ROM3 sample by the
+ * dispatcher in fb.c; filters for the m68k's sound-capability report
+ * window and calls audio_set_mode with what it finds. */
+void audio_consume_rom3_sample(uint16_t addr_lsb);
+
 typedef void (*audio_fill_cb_t)(uint8_t *buf, uint32_t bytes);
 
 /* Initialise the cart audio buffer pointer; clear any previously

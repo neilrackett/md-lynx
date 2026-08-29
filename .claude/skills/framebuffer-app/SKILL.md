@@ -1,36 +1,38 @@
 ---
 name: framebuffer-app
 description: >-
-  Use when building, modifying, or debugging an app on this
-  md-framebuffer-template -- a template for sub-20-ms audiovisual
-  SidecarTridge Multi-device microfirmware apps for the Atari ST (games,
-  demos, console/computer emulations) where the speed of drawing a
-  colourful 320x200 screen matters; you draw a 320x200 16-colour
-  framebuffer on the RP2040 in the cartridge and the firmware blits it to
-  the ST each VBL. Covers the chunked framebuffer, the fb_* / palette /
-  audio / ikbd APIs, stripping the bundled demos to start a fresh app,
-  the main-loop pattern, and the build / RAM constraints. Triggers on
-  tasks like "make a framebuffer app", "draw X on the Atari screen", "add
-  audio/input", "strip the demos", or "why does my app show garbage".
+  Use when building, modifying, or debugging MD/Lynx -- an Atari Lynx
+  emulator built on the md-framebuffer-template, the platform for
+  sub-20-ms audiovisual SidecarTridge Multi-device microfirmware apps for
+  the Atari ST; you draw a 320x200 16-colour framebuffer on the RP2040 in
+  the cartridge and the firmware blits it to the ST each VBL. Covers the
+  chunked framebuffer, the fb_* / palette / audio / ikbd APIs, the
+  main-loop pattern, and the build / RAM constraints. Triggers on
+  tasks like "draw X on the Atari screen", "add audio/input", "why is the
+  emulator slow", or "why does my app show garbage".
 ---
 
-# Building a framebuffer app on md-framebuffer-template
+# MD/Lynx on the md-framebuffer-template
 
-This template is for **sub-20-millisecond audiovisual SidecarTridge
-Multi-device microfirmware apps** for the Atari ST / STE / MegaST(E) —
-games, demos, and console/computer emulations where the speed of putting
-a colourful 320×200 screen up matters. You draw a 320×200 16-colour
-framebuffer in the Pico's RAM and the firmware blits it to the ST each
-VBL (50 Hz), with keyboard input and YM audio for free.
+This repo is **MD/Lynx**, an Atari Lynx emulator for the Atari ST / STE /
+MegaST(E), built on the **md-framebuffer-template** platform for
+sub-20-millisecond audiovisual SidecarTridge Multi-device microfirmware
+apps. The app runs on the Pico in the cartridge: you draw a 320×200
+16-colour framebuffer in the Pico's RAM and the firmware blits it to the
+ST each VBL (50 Hz), with keyboard, joystick and audio handled for you.
 
-**You develop 100% on the RP2040 side — the framework does the heavy
-lifting:** a dual (page-flipped) framebuffer on the Atari ST side
-(tear-free, managed for you); real 50 Hz locked to the ST's vertical
-blank; **~19 ms of compute every VBL** to draw your frame; chunked
-drawing on the RP2040 (one byte per pixel) with the chunked → ST planar
-conversion done for you in **~1 ms per VBL** (split across both cores);
-**~6 kHz, 6-bit sampled sound** out the YM2149; and Atari ST keyboard
-handled on the RP2040 with decoded scancodes delivered to your app.
+**Read `AGENTS.md` first** — it is the full playbook, and the "Atari Lynx
+emulator" section covers the parts specific to this app (cartridge
+flashing, the display path, the palette, frame pacing, audio, controls).
+This skill is the quick reference for the platform underneath it.
+
+**Platform capabilities:** a dual (page-flipped) framebuffer on the ST
+side (tear-free, managed for you); real 50 Hz locked to the ST's vertical
+blank; **~19 ms of compute every VBL**; chunked drawing on the RP2040 (one
+byte per pixel) with the chunked → ST planar conversion done for you in
+**~1 ms per VBL** across both cores; **STE DMA sound with a YM2149
+fallback**, chosen at runtime from what the machine has; and ST keyboard
+plus port-1 joystick decoded on the RP2040.
 
 ## The model (read this first)
 
@@ -45,28 +47,24 @@ loop paces the app to 50 Hz.
 `README.md` is the human guide; `AGENTS.md` is the architecture
 deep-dive; `examples/hello_text/` is a minimal working app.
 
-## Starting a fresh app
+## Where the code lives
 
-**Quick path:** `tools/reset_template.sh` does all of the below — it backs
-up `rp/` to `rp.bak`, deletes the demo/menu files, installs a minimal
-`emul.c` + `CMakeLists.txt`, generates a fresh app UUID into `uuid.txt`,
-and resets the version to `v0.0.1`. The manual steps:
+- `rp/src/lynxemu.cpp` — the emulator front-end. Menu, SD→flash cartridge
+  loader, display scaling, palette publish, input mapping, 60→50 Hz frame
+  pacing, audio resampling. **Start here for anything app-level.**
+- `rp/src/lynx/` — the vendored Handy core (C++, zlib licence). Change it
+  only when the port needs it; keep the `ALTERED SOURCE VERSION` banner and
+  tag changes `MD/Lynx:`.
+- `rp/src/emul.c` — boot sequence and the main loop.
+- `target/atarist/src/userfw.s` — the m68k side (per-VBL blit, palette,
+  audio, IKBD). Only touch this if you need new m68k behaviour, and
+  remember it forces a Docker `stcmd` build.
+- `rp/src/main.c` — clocks and config bring-up only. **Don't add features
+  here.**
 
-1. **Delete the demos**: `rp/src/demo_*.c` (5 files), `rp/src/include/demo.h`,
-   and the asset headers (`sidecart_logo.h`, `sidecart_text.h`,
-   `solid3d.h`, `sprites_data.h`, `cojo_texture.h`, `cojo_font.h`,
-   `diego_sprite.h`, `uridium_surface.h`).
-2. **`rp/src/CMakeLists.txt`**: remove the `demo_*.c` lines from
-   `target_sources(...)`.
-3. **`rp/src/emul.c`**: replace the demo-dispatcher block (the
-   `demo_dispatcher_init()` call and the `demo_dispatcher_*` calls in the
-   `while (true)` loop) with your own init + render loop. Keep everything
-   above it (the boot sequence) and the `fb_pump_rom3()` / `ikbd_pump()` /
-   `audio_render_frame()` calls. Drop `#include "demo.h"`.
-4. **`desc/app.json`**: set your `uuid` (must match the UUID passed to
-   `build.sh`).
-
-`examples/hello_text/emul.c` is a ready-made stripped `emul.c` to copy.
+`examples/hello_text/` and `tools/reset_template.sh` are leftovers from the
+template and describe an app this repo no longer is — `reset_template.sh`
+would delete the emulator, so don't run it.
 
 ## The API (keep these modules; they are your API)
 
@@ -79,7 +77,8 @@ fb_chunked_plot(x, y, color);                  // bounds-checked pixel
 fb_fill_rect(x, y, w, h, color);
 fb_blit(&bitmap, x, y);                        // opaque (FB_BITMAP{w,h,data})
 fb_blit_key(&bitmap, x, y, key);               // key index = transparent
-// text: fb_font.h  (font8x8 defined in fb.c; no printf -- format numbers yourself)
+// text: fb_font.h  (font8x8 defined in fb.c; no printf -- format numbers
+// yourself, see fmt_uint/str_append in lynxemu.cpp). 8x8 cell = 40x25 chars.
 font_set_font(&font8x8); font_set_color(0); font_align(FONT_ALIGN_LEFT);
 font_move(x, y); font_print("TEXT");
 // palette: palette.h  (16 entries, channels 0..7; idx 0 white, 15 black by default)
@@ -88,10 +87,14 @@ palette_set_entry(2, PALETTE_RGB(7, 0, 0));    // or palette_set(entries[16])
 fb_publish();                                  // once per frame, after drawing
 // input: ikbd.h
 ikbd_key_event_t k; while (ikbd_pop_key(&k)) { if (k.is_press) ... }  // k.scancode
-// audio: audio.h
-audio_play_loop(data, bytes);                  // loop a baked-in buffer, OR
-audio_set_fill_callback(cb);                   // cb(buf,bytes) per VBL, live
-audio_render_frame();                          // call every loop iteration
+ikbd_get_joystick();           // port 1: bit0 up,1 down,2 left,3 right,7 fire
+ikbd_set_esc_auto_exit(false); // take ESC over (lynxemu does)
+ikbd_request_boot_gem();       // exit to GEM on your own trigger
+// audio: audio.h  (back-end picked at runtime from the m68k's _SND probe)
+audio_set_fill_callback(cb);   // cb(buf,bytes) per VBL; bytes is 500 signed
+                               // PCM for STE DMA, 224 for YM (vA,vB) pairs
+audio_get_mode();              // AUDIO_MODE_DMA | _YM | _SILENT
+audio_render_frame();          // call every loop iteration
 ```
 
 **SD card:** the microSD is already mounted at boot
@@ -115,21 +118,25 @@ Main loop shape (in `emul_start()`):
 
 ```c
 while (true) {
-    fb_pump_rom3(); ikbd_pump();          // keep: input + VBL sync
-    ikbd_key_event_t k; while (ikbd_pop_key(&k)) { /* handle */ }
-    /* clear, draw into fb_chunked_buffer */
-    fb_publish();                          // tear-free 50 Hz
-    audio_render_frame();                  // keep: audio
+    ikbd_clear_command();                 // keep: makes an exit a one-shot
+    fb_pump_rom3(); ikbd_pump();          // keep: input + VBL sync + _SND
+    ikbd_key_event_t k; while (ikbd_pop_key(&k)) { lynxemu_handle_key(&k); }
+    lynxemu_render_frame();               // draws + fb_publish: tear-free 50 Hz
+    audio_render_frame();                 // keep: audio
 }
 ```
 
 ## Critical constraints (get these wrong and the ST shows garbage)
 
-- **RAM is the binding limit.** `.bss` + heap must not grow past
-  `0x20030000` (the m68k cart-ROM mirror). A large `static` array can
-  push past it and silently corrupt the m68k code → the ST runs garbage
-  / looks "rolled back". The framebuffer buffers already use ~96 KB.
-  Big lookup tables / textures should stay `const` (flash), not RAM.
+- **RAM is the binding limit, and it is nearly all spoken for.** `.bss` +
+  heap must not grow past `0x20030000` (the m68k cart-ROM mirror). The
+  framebuffer buffers take ~96 KB and the emulator's heap ~70 KB more,
+  leaving roughly 8 KB of slack — a large `static` array will not fit.
+  Check `__bss_end__` .. `__StackLimit` in `rp/build-*/rp.elf.map` after
+  any change that adds state. Buffers the ST never reads can be parked in
+  the cart-region hole with `__cart_app_free("name")` (`cart_shared.h`),
+  which has a few KB free. Big lookup tables / textures stay `const`
+  (flash), never RAM.
 - **Build:** `./build.sh <board> <build_type> <uuid>`. Build with the
   dev UUID `44444444-4444-4444-8444-444444444444` (the placeholder in
   AGENTS.md keys the app to the wrong identity → it jumps to Booster).
@@ -138,21 +145,26 @@ while (true) {
   need it.
 - **Optimization:** the global build is `MinSizeRel` (`-Os`). For hot
   per-pixel loops add `#pragma GCC optimize("O3")` at the top of that
-  *compute-only* `.c` file and `__not_in_flash_func()` on the function —
-  never on bus/PIO/timing code. The demo sources are the reference for
-  the full toolbox (LUTs, the SIO interpolator, `fb_core1_dispatch`
-  dual-core).
+  *compute-only* file and `__not_in_flash_func()` on the function — never
+  on bus/PIO/timing code, and watch the RAM cost: `C65C02::Update` is
+  deliberately left in flash because its ~27 KB does not fit.
+  `fb_core1_dispatch` / `fb_core1_wait` give you Core 1 for parallel work;
+  each dispatch must be joined before the next.
 - **Never** edit the `pico-sdk/`, `pico-extras/`, `fatfs-sdk/`
   submodules — the build re-pins them. Don't add features to `main.c`
   (use `emul.c`).
-- **Palette:** index 0 = white (text/border), 15 = black (background);
+- **Palette:** index 0 also drives the ST border. `palette_set()` takes all 16 words; the port publishes STE-format words (4 bits per channel, LSB in the top bit of the nibble) so a plain ST reads the correct 3-bit approximation.
+- **Default palette:** index 0 = white (text/border), 15 = black (background);
   `PALETTE_RGB(r,g,b)` channels are 0..7. Re-publishing the palette each
   frame is cheap (colour-cycling).
 - **Commits:** no AI attribution / `Co-Authored-By` trailers.
 
 ## Verifying without hardware
 
-You usually can't flash. Validate fixed-point / addressing math by
-mirroring the exact C in a small offline script and diffing against the
-reference, the way the demos were validated (e.g. interpolator configs,
-rasteriser hole-checks). Then the user flashes and confirms.
+You usually can't flash. What you can do offline: build (that catches the
+RAM ceiling, which is the failure that actually bites here), read the
+`.map` for the heap window, and validate addressing / fixed-point maths by
+mirroring the exact code in a small script and diffing it against a
+reference. Then the user flashes and confirms. In-game, the menu's
+**TIMINGS** setting and the **ABOUT** page report per-frame emulation cost,
+frame rate and the detected audio back-end.

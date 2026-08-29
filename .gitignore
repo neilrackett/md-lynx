@@ -66,3 +66,10 @@ __pycache__/
 *.pyc
 /uuid.txt
 .DS_Store
+
+# Staged from the xpad submodule by target/atarist/build.sh: only
+# ST_WORKING_FOLDER is mounted into the toolkit container, so the ST
+# build needs its own copy of the ABI equates inside this folder.
+# Generated on every build -- lib/xpad is the source of truth.
+/target/atarist/src/inc/xpad.inc
+

@@ -1,160 +1,166 @@
-/**
- * File: emul.c
- * Description: Template microfirmware boot path. Brings up the cartridge
- *              bus emulator, the 32 KB color framebuffer, the ROM3
- *              command-capture ring, the SD card, and the SELECT
- *              button, then enters a tight main loop that drains the
- *              ROM3 ring into the IKBD demux and re-renders the
- *              framebuffer.
+/*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * The previous u8g2-backed terminal subsystem was stripped
- * (term.c, display.c, display_term.h). The cart-side UI is now driven
- * entirely by fb.c writing into the 32 KB low-res framebuffer at
- * $FA8300, which the m68k userfw VBL loop blits to ST screen each
- * frame. Apps extend this template by drawing into
- * `fb_screen.framebuffer` via fb_font / fb_blit.
+ * File: emul.c
+ * Description: Boot path + main loop for the Atari Lynx port. Brings up
+ *              the cartridge bus emulator, the 320x200 framebuffer, the
+ *              ROM3 cart-bus capture ring, the SD card and the audio
+ *              buffer, then hands off to the emulator front-end
+ *              (lynxemu.cpp): drain IKBD -> feed keys -> render one
+ *              frame per VBL -> refill the audio buffer.
  */
 
 #include "emul.h"
 
+#include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "aconfig.h"
 #include "audio.h"
-#include "audio_sample.h"
+#include "cart_shared.h"
 #include "commemul.h"
+#include "constants.h"
 #include "debug.h"
-#include "demo.h"
 #include "fb.h"
 #include "ff.h"
 #include "ikbd.h"
+#include "lynxemu.h"
 #include "memfunc.h"
 #include "palette.h"
 #include "pico/stdlib.h"
 #include "romemul.h"
 #include "sdcard.h"
 #include "select.h"
+#include "settings/settings.h"
 #include "target_firmware.h"
+#include "xpadin.h"
 
-/* No sleep -- tight loop. The dirty-frame handshake means
- * the m68k only blits cart->ST when fb_publish() actually advances
- * the frame counter. The RP can rewrite the framebuffer at whatever
- * rate it wants; the m68k decides per VBL whether the new content is
- * worth copying. Apps that need a fixed cadence can add their own
- * sleep_ms / sleep_until call here. */
+/* Cart-corruption canary: the first 16 bytes of the served cart region
+ * (the m68k cartridge header + entry) must stay byte-identical to the
+ * embedded image after COPY_FIRMWARE_TO_RAM. Any change means something
+ * on the RP wrote into the region the m68k is executing from -- which
+ * makes the ST bomb or freeze on the boot frame, with no clue on the RP
+ * side that anything is wrong. Logged (debug builds only) with a stage
+ * tag so the culprit can be localised over UART. */
+static bool cart_check(const char *stage) {
+  static bool ok = true;
+  if (ok &&
+      memcmp((const void *)&__rom_in_ram_start__, target_firmware, 16) != 0) {
+    ok = false;
+    const volatile uint16_t *c =
+        (const volatile uint16_t *)&__rom_in_ram_start__;
+    DPRINTF("CART REGION CORRUPTED (%s): %04X %04X %04X %04X\n", stage, c[0],
+            c[1], c[2], c[3]);
+  }
+  return ok;
+}
 
 void emul_start() {
-  // RP2040 RAM is undefined at power-on; firmware.py only emits the
-  // bytes up to the last non-zero in BOOT.BIN (padded to 64 KB), so
-  // without an explicit erase the framebuffer region at $FA8300+ would
-  // be whatever was sitting in RAM and the m68k blit would copy that
-  // noise to the ST screen. Zero the whole 64 KB shared region first
-  // so every byte the m68k can see is deterministic.
+  // Cartridges live in the app folder (per-app config
+  // ACONFIG_PARAM_FOLDER, default "/lynx" from aconfig.c).
+  SettingsConfigEntry *folder =
+      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
+  const char *folderName = folder ? folder->value : "/lynx";
+
+  // The .cart_app_free buffers live inside the shared region's unused
+  // hole. The linker script hard-codes that window (ld cannot read C
+  // headers), so verify it here against cart_shared.h's authoritative
+  // offsets -- a drifted script would let the ST-visible layout and the
+  // parked buffers collide.
+  {
+    extern char __cart_app_free_start__[], __cart_app_free_end__[];
+    const char *base = (const char *)&__rom_in_ram_start__;
+    if (__cart_app_free_start__ < base + CART_APP_FREE_OFFSET ||
+        __cart_app_free_end__ > base + CART_FRAMEBUFFER_OFFSET) {
+      panic(".cart_app_free outside the shared-region hole");
+    }
+  }
+
+  // RP2040 RAM is undefined at power-on and firmware.py only emits the
+  // bytes up to the last non-zero in BOOT.BIN, so zero the whole 64 KB
+  // shared region first -- every byte the m68k can see must be
+  // deterministic -- then copy the cartridge image into it.
   ERASE_FIRMWARE_IN_RAM();
-
-  // Copy the cartridge image into the now-zeroed region.
   COPY_FIRMWARE_TO_RAM((uint16_t *)target_firmware, target_firmware_length);
+  cart_check("post-copy");
 
-  // Reset the IKBD ring (init order before commemul_init is fine since
-  // the producer side runs from the main loop, not from an IRQ).
+  // Controller-input receivers before commemul: both are fed by the ROM3
+  // dispatcher from fb_init onward, and their producers run on the main
+  // loop rather than from an IRQ.
   ikbd_init();
+  xpadin_init();
 
-  // Initialise the cartridge ROM4 read engine. ROM4 reads are served
-  // entirely by chained DMAs feeding the PIO TX FIFO -- no CPU/IRQ
-  // involvement. IKBD ingest is on ROM3 + commemul ring (see main
-  // loop below).
+  // Cartridge ROM4 read engine (served by chained DMA -> PIO, no CPU).
   if (init_romemul(false) < 0) {
-    panic("init_romemul failed: PIO/DMA claim or program load returned <0");
+    panic("init_romemul failed");
   }
 
-  // Bring up the ROM3 cart-bus capture (PIO + 32 KB DMA ring) BEFORE
-  // fb_init: fb_init's first fb_publish() drains the ROM3 ring while it
-  // waits for the m68k's VBL ack, so the ring must already exist. (At
-  // boot the m68k may not be emitting acks yet; the first publish just
-  // times out after ~33 ms and proceeds.) The main loop drains the
-  // ring via fb_pump_rom3() -> IKBD demux + VBL frame-sync.
+  // ROM3 cart-bus capture ring (PIO + DMA) BEFORE fb_init, whose first
+  // fb_publish() drains it while waiting for the m68k VBL ack.
   if (commemul_init() < 0) {
-    panic("commemul_init failed: PIO/DMA claim or program load returned <0");
+    panic("commemul_init failed");
   }
+  cart_check("post-commemul");
 
-  // Initialise the 32 KB low-res framebuffer (320x200, 4 bpp). Sets
-  // up `fb_screen` for the font/draw primitives, clears the FB to
-  // black (0xFF -> palette index 15 on the default TOS palette), and
-  // renders the boot pattern. The m68k VBL loop in userfw.s blits
-  // this to an off-screen ST page each frame and flips the video base.
+  // 320x200 4bpp framebuffer + fb_screen for the draw primitives.
+  // (This launches Core 1 for the chunky->planar worker.)
   if (fb_init(&fb_mode_320x200) < 0) {
     panic("fb_init failed");
   }
+  DPRINTF("fb_init OK\n");
+  cart_check("post-fb");
 
-  // Publish the default 16-colour palette to the cart shared-region
-  // slot. The m68k VBL handler applies it to the shifter palette
-  // registers ($FFFF8240..) every frame. Apps that want a different
-  // palette call palette_set() / palette_set_entry() at any time;
-  // the next VBL picks it up.
+  // Default palette; lynxemu_init() replaces it with the menu palette,
+  // and each running cartridge with its own 16 Lynx colours.
   palette_init();
 
-  // Initialise the cart audio buffer producer (see audio.h). The
-  // m68k Timer-B IRQ in userfw.s consumes the buffer at ~5,585 Hz
-  // (2 B/sample dual-channel mode). audio_init() leaves the buffer
-  // silent until a callback is installed; the playback source is
-  // chosen below, after the SD card has had a chance to mount.
+  // Cart audio buffer producer. The back-end (STE DMA or YM2149) is
+  // reported by the m68k over the cart bus; audio.c decodes that report
+  // from the ROM3 ring and picks the matching sample format.
   audio_init();
 
-  // SD card -- best-effort. Apps that need persistent storage can
-  // ignore the failure path or treat it as fatal. The folder name is
-  // taken from per-app config (ACONFIG_PARAM_FOLDER) so apps can be
-  // reconfigured from Booster without recompiling.
+  // SD card -- best effort. Cartridges live in `folderName`.
   FATFS fsys;
-  SettingsConfigEntry *folder =
-      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
-  const char *folderName = folder ? folder->value : "/test";
   if (sdcard_initFilesystem(&fsys, folderName) != SDCARD_INIT_OK) {
     DPRINTF("SD card unavailable. Continuing without SD.\n");
   }
-
-  // Audio source selection. Try to stream a
-  // .YMS file from the app folder first; on any failure (no SD,
-  // file missing, bad header, rate mismatch) fall back to the
-  // baked-in Ghostbusters G1 jingle so the demo still has audio.
-  // Apps swap their own audio_play_yms_file path or replace this
-  // block with audio_set_fill_callback() / audio_play_loop().
-  if (audio_play_yms_file("DEMO.YMS") < 0) {
-    audio_play_loop(audio_sample_data,
-                    (uint32_t)sizeof(audio_sample_data));
-  }
+  cart_check("post-sd");
 
   // Cartridge SELECT button -- apps can poll select_isPressed().
   select_configure();
 
-  // Bring up the demo dispatcher. demo_dispatcher_init takes
-  // ownership of the ESC key from ikbd.c (ESC now means "back to
-  // menu" inside a demo and "exit to GEM" only when the menu is on
-  // screen). The first dispatcher render paints the boot menu over
-  // whatever fb_init left in the framebuffer.
-  demo_dispatcher_init();
+  // Bring up the emulator front-end: palette, cartridge list, menu.
+  // It takes ownership of the ESC key (ESC toggles the menu; leaving to
+  // GEM is the menu's own Exit item).
+  DPRINTF("lynxemu_init...\n");
+  lynxemu_init();
+  cart_check("post-lynxemu-init");
+  audio_set_fill_callback(lynxemu_audio_fill);
 
   // Main loop:
-  //   1. Drain the ROM3 commemul ring straight into the IKBD raw-byte
-  //      ring (one PIO sample per IKBD byte the m68k Timer-B handler
-  //      forwarded; the filter inside ikbd_consume_rom3_sample picks
-  //      out the $FB8200..$FB82FF window).
-  //   2. Run the IKBD demux on whatever bytes arrived.
-  //   3. Forward decoded key events to the dispatcher (which routes
-  //      to the menu or the active demo).
-  //   4. Re-render the cart framebuffer via the dispatcher (menu UI
-  //      or active demo's render_frame). The m68k VBL loop in
-  //      userfw.s blits this into an ST screen page once per VBL.
+  //   0. Re-arm the command sentinel to NOP (makes an exit's BOOT_GEM a
+  //      one-shot so it doesn't re-trigger on the next ST reset).
+  //   1. Drain the ROM3 ring -> IKBD demux + VBL frame-sync + the
+  //      m68k's sound-capability report.
+  //   2. Run the IKBD demux.
+  //   3. Forward decoded key events to the emulator front-end.
+  //   4. Render one frame into the framebuffer (blocks on the VBL).
+  //   5. Refill the cart audio buffer.
   DPRINTF("Entering main loop\n");
   while (true) {
-    fb_pump_rom3();  /* drains ROM3 ring -> IKBD demux + VBL frame-sync */
+    ikbd_clear_command();
+    fb_pump_rom3();
     ikbd_pump();
 
     ikbd_key_event_t k;
     while (ikbd_pop_key(&k)) {
-      demo_dispatcher_handle_key(&k);
+      lynxemu_handle_key(&k);
     }
 
-    demo_dispatcher_render_frame();
+    lynxemu_render_frame();
     audio_render_frame();
+    cart_check("main-loop");
   }
 }

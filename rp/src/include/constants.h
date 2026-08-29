@@ -9,6 +9,8 @@
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
+#include <stdint.h>
+
 #include "hardware/vreg.h"
 
 // Common macros
@@ -47,12 +49,25 @@
 #define ROM_SIZE_WORDS (ROM_SIZE_BYTES / 2)           // 32KWords
 #define ROM_SIZE_LONGWORDS (ROM_SIZE_BYTES / 4)       // 16KLongWords
 
+
 // Frequency constants.
-#define SAMPLE_DIV_FREQ (1.f)         // Sample frequency division factor.
-#define RP2040_CLOCK_FREQ_KHZ 225000  // Clock frequency in KHz (225MHz).
+// 400 MHz so the Lynx core has enough headroom to reach full speed
+// (a 65C02 plus the Suzy blitter does not fit in the template's 225 MHz). Requires 1.30 V and a /4 flash
+// divider (see PICO_FLASH_SPI_CLKDIV in CMakeLists.txt); the PIO
+// cart-bus programs keep their proven 225 MHz wall-clock timing via the
+// scaled divider below. If a board fails to boot at 400 MHz (silicon
+// lottery), step down: 360000 @ VREG_VOLTAGE_1_25, then 300000 @
+// VREG_VOLTAGE_1_15, then back to 225000 @ VREG_VOLTAGE_1_10 (a /2
+// flash divider is only safe at 225).
+#define RP2040_CLOCK_FREQ_KHZ 400000  // Clock frequency in KHz.
+// PIO clock divider: keeps the cart-bus PIO programs at their original
+// 225 MHz cycle timing regardless of the sysclk overclock. Fractional
+// divider jitter is <=1 sysclk (~2.5 ns) against a ~71 ns settle
+// budget -- negligible.
+#define SAMPLE_DIV_FREQ ((float)RP2040_CLOCK_FREQ_KHZ / 225000.0f)
 
 // Voltage constants.
-#define RP2040_VOLTAGE VREG_VOLTAGE_1_10  // Voltage in 1.10 Volts.
+#define RP2040_VOLTAGE VREG_VOLTAGE_1_30  // Required for 400 MHz.
 #define VOLTAGE_VALUES                                                 \
   (const char *[]){"NOT VALID", "NOT VALID", "NOT VALID", "NOT VALID", \
                    "NOT VALID", "NOT VALID", "0.85v",     "0.90v",     \
@@ -78,11 +93,22 @@
 // NOLINTBEGIN(readability-identifier-naming)
 extern unsigned int __flash_binary_start;
 extern unsigned int _rom_temp_start;
+// Size of the ROM_TEMP flash window, exported by memmap_rp.ld as an
+// absolute symbol: MD/Lynx programs the selected Lynx cartridge here at
+// load time and CCart reads it in place over XIP. Taken from the linker
+// rather than restated, so the bound the app enforces cannot drift from
+// the space actually reserved. Address-of, because an absolute linker
+// symbol carries its value in the address.
+extern char __rom_temp_size__[];
 extern unsigned int _booster_app_flash_start;
 extern unsigned int _config_flash_start;
 extern unsigned int _global_lookup_flash_start;
 extern unsigned int _global_config_flash_start;
 extern unsigned int __rom_in_ram_start__;
 // NOLINTEND(readability-identifier-naming)
+
+static inline uint32_t rom_temp_size(void) {
+  return (uint32_t)(uintptr_t)__rom_temp_size__;
+}
 
 #endif  // CONSTANTS_H

@@ -31,13 +31,13 @@
 ; MFP source can fire. Only the custom VBL handler at $70 stays
 ; active.
 ;
-; IKBD bytes are forwarded inline from FBDRV_INLINE. The MOVEM-burst
-; framebuffer copy emits an IKBD poll block every FBDRV_IKBD_POLL_EVERY
-; iters (~20 HBLs / 1.24 ms): btst the ACIA RX-ready bit, and if set,
-; read the byte and emit it via a cart-bus read at IKBD_WINDOW_BASE +
-; byte ($FB8200..$FB82FF, md-devops single-byte ABI). The RP captures
-; the read via the commemul PIO+DMA ring (no per-read CPU overhead)
-; and runs the IKBD demux from its main loop.
+; IKBD bytes are forwarded interrupt-driven by userfw_acia_irq: on each
+; ACIA RX interrupt it reads the byte and emits it via a cart-bus read
+; at IKBD_WINDOW_BASE + byte ($FB8200..$FB82FF, md-devops single-byte
+; ABI). Reading on interrupt (rather than polling inside the blit) means
+; no byte is lost, so multi-byte joystick packets survive. The RP
+; captures the read via the commemul PIO+DMA ring (no per-read CPU
+; overhead) and runs the IKBD demux from its main loop.
 ;
 ; --- Constants ----------------------------------------------------
 
@@ -79,10 +79,15 @@ UFW_VBL_FLAG          equ $4C6               ; word: cleared by userfw_vbl, poll
 ; Used by FBDRV_INLINE to spill A7 (SP) around the MOVEM-burst that
 ; includes A7 in its register list; the current-page pointer
 ; UFW_SCREEN_PAGE and the saved TOS VBL vector / Physbase result
-; also live here. 16 bytes used; SCREEN_A's tail at $77D00 has 768
-; bytes available (shifter only reads 200*160 = 32000 B of each
-; screen page, allocation is 32 KB).
+; also live here, as do the three Xpad slots. 28 bytes used from
+; $77FD0; SCREEN_A's tail at $77D00 has 768 bytes available (shifter
+; only reads 200*160 = 32000 B of each screen page, allocation is
+; 32 KB), of which the first 500 are the STE DMA sound buffer.
+UFW_XPAD_HDR          equ $00077FD0          ; longword: Xpad block base, 0 = no provider
+UFW_XPAD_BUF0         equ $00077FD4          ; longword: address of pad 0 in buffer 0
+UFW_XPAD_BUF1         equ $00077FD8          ; longword: address of pad 0 in buffer 1
 UFW_VBL_VEC_SAVE      equ $00077FE0          ; longword: TOS VBL vector ($70)
+UFW_HAS_DMA           equ $00077FE4          ; byte: 1 = STE DMA sound detected
 UFW_PHYSBASE_SAVE     equ $00077FE8          ; longword: XBIOS Physbase result
 UFW_SCREEN_PAGE       equ $00077FEC          ; longword: current draw page address
 
@@ -98,7 +103,6 @@ UFW_SCREEN_PAGE       equ $00077FEC          ; longword: current draw page addre
 ; 200*160/48=666r32. For values that don't divide evenly the trailing
 ; bytes are simply not copied (they remain stale on the screen page).
 FBDRV_ITER_BYTES      equ 48                            ; 12 longwords: D0-D7 + A1-A4 (A6=src, A5=dst, A0=dedicated audio pointer, A7=SP preserved -- IRQs may fire during the macro).
-FBDRV_IKBD_POLL_EVERY equ 40                            ; insert inline IKBD poll every Nth MOVEM iter. 40 iters * ~31us = ~1.24ms (~20 HBLs).
 FBDRV_TOTAL_BYTES     equ (FB_COPY_LINES * FB_ROW_BYTES) ; honours FB_COPY_LINES
 FBDRV_MAIN_ITERS      equ (FBDRV_TOTAL_BYTES / FBDRV_ITER_BYTES)
 FBDRV_MAIN_BYTES      equ (FBDRV_MAIN_ITERS * FBDRV_ITER_BYTES)
@@ -148,25 +152,11 @@ FBDRV_TAIL_DISP       equ FBDRV_MAIN_BYTES                        ; tail goes at
 ; and the small d16(a5) tail MOVEM at the end.
 FBDRV_INLINE          macro
     movea.l #UFW_FB_SRC, a6
-FBDRV_POLL_CTR        set 0
+    ; IKBD is serviced interrupt-driven (userfw_acia_irq), so the blit
+    ; no longer polls the ACIA inline -- it's a straight MOVEM burst.
     rept    FBDRV_MAIN_ITERS
     movem.l (a6)+, d0-d7/a1-a4
     movem.l d0-d7/a1-a4, -(a5)
-FBDRV_POLL_CTR        set FBDRV_POLL_CTR + 1
-    ifeq    FBDRV_POLL_CTR - FBDRV_IKBD_POLL_EVERY
-FBDRV_POLL_CTR        set 0
-    ; Inline IKBD poll. Clobbers D0/A1 -- safe because the next
-    ; MOVEM iter reloads D0-D7/A1-A4 from cart, and the .after_copy
-    ; code after the macro overwrites D0 with UFW_SCREEN_PAGE before
-    ; using it. A0 is intentionally NOT touched here -- it holds the
-    ; dedicated audio buffer pointer for the Timer-B IRQ handler.
-    btst    #0, ACIA_KBD_STATUS.w
-    beq.s   *+18                          ; skip the 16-byte body if no data
-    moveq   #0, d0                        ; pre-zero D0 so move.b yields a clean 0..255 word
-    lea     IKBD_WINDOW_BASE, a1
-    move.b  ACIA_KBD_DATA.w, d0
-    tst.b   (a1, d0.w)                    ; emit byte via cart-bus read
-    endc
     endr
     ;
     ; Tail: copy the last FBDRV_TAIL_BYTES bytes of the blitted
@@ -258,10 +248,15 @@ FB_ROW_BYTES          equ 160                 ; 320 px * 4 bpp / 8
 
 ; --- IKBD ownership (Epic 3 Story 3.1) -----------------------------
 
-; Keyboard ACIA at $FFFFFC00/02. MIDI ACIA at $FFFFFC04/06 is not
-; touched. Status bit 0 = RX-data-ready; bit 1 = TX-empty.
+; Keyboard ACIA at $FFFFFC00/02. Status bit 0 = RX-data-ready; bit 1 =
+; TX-empty. The MIDI ACIA at $FFFFFC04/06 shares the one MFP ACIA
+; interrupt (IERB bit 6), so the interrupt-driven handler must drain it
+; too or the level-asserted IRQ line can re-trigger.
 ACIA_KBD_STATUS       equ $FFFFFC00
 ACIA_KBD_DATA         equ $FFFFFC02
+ACIA_MIDI_STATUS      equ $FFFFFC04
+ACIA_MIDI_DATA        equ $FFFFFC06
+MFP_ACIA_BIT          equ 6                  ; IERB/IMRB bit for keyboard/MIDI ACIA
 
 ; MC68901 MFP registers (subset we manipulate).
 MFP_IERA              equ $FFFFFA07          ; interrupt enable A (Timer-A = bit 5)
@@ -315,6 +310,102 @@ IKBD_WINDOW_BASE      equ $FB8200
 ; is irrelevant; only the address matters.
 VBLSYNC_ADDR          equ $FB8400
 
+; --- STE/Mega STE DMA sound (auto-detected at runtime) -----------
+; STE-class machines play 8-bit SIGNED PCM from ST RAM by DMA with no
+; CPU per sample -- a big quality win over the ~5.6 kHz YM beeper
+; approximation. The buffers live in the UNUSED TAILS of the two
+; screen pages: past the 32000-byte framebuffer, below the userfw
+; scratch slots ($77FE0+), never displayed nor touched by the blit --
+; no separately-allocated ST RAM. Presence is detected at boot via
+; the _SND cookie (bit 1), stored in UFW_HAS_DMA; both the DMA and
+; the YM/Timer-B paths compile in and are chosen at runtime, and the
+; result is reported to the RP each VBL so it produces the matching
+; audio format (signed PCM for DMA, (vA,vB) YM pairs otherwise).
+; Byte registers live at ODD addresses in the $FFFF89xx block.
+; (Design shared with md-mjpeg's userfw.s.)
+STE_DMA_CTRL          equ $FFFF8901          ; bit0 = play, bit1 = loop
+STE_DMA_START_HI      equ $FFFF8903
+STE_DMA_START_MID     equ $FFFF8905
+STE_DMA_START_LO      equ $FFFF8907
+STE_DMA_END_HI        equ $FFFF890F
+STE_DMA_END_MID       equ $FFFF8911
+STE_DMA_END_LO        equ $FFFF8913
+STE_DMA_MODE          equ $FFFF8921          ; bit7 = mono, bits1-0 = rate
+STE_DMA_MODE_VAL      equ $82                ; mono + 25033 Hz (rate = 2)
+STE_DMA_CNT_MID       equ $FFFF890B          ; frame COUNTER mid byte (read-only)
+; Double buffer in the two screen-page tails. Loop-mode DMA plays one
+; while .after_copy refills the OTHER, so the m68k write never crosses
+; the DMA read pointer. Which buffer the DMA is in is read from bit 7
+; of the frame-counter mid byte: A ($77Dxx -> bit7=0) vs B ($7FDxx ->
+; bit7=1).
+STE_SND_BUF_A         equ $00077D00          ; page A tail
+STE_SND_BUF_B         equ $0007FD00          ; page B tail
+STE_SND_BYTES         equ 500                ; ~1 PAL VBL @ 25033 Hz (mult of 4)
+STE_SND_A_END         equ (STE_SND_BUF_A + STE_SND_BYTES)
+
+; Cookie jar (_p_cookies) + _SND cookie for DMA-sound detection.
+COOKIE_JAR_PTR        equ $000005A0          ; longword: cookie jar base (0 = none)
+COOKIE_SND            equ $5F534E44          ; '_SND'; value bit 1 = DMA/PCM sound
+
+; Sound-capability report window: the m68k reads (SNDCAP_WINDOW_BASE +
+; has_dma) each VBL; the RP commemul ring decodes the low bit and
+; produces the matching audio format. Distinct from IKBD ($FB8200)
+; and VBLSYNC ($FB8400).
+SNDCAP_WINDOW_BASE    equ $FB8600
+
+; --- Xpad: extended controller input ------------------------------
+; Xpad (https://github.com/neilrackett/atarist-xpad) is an open standard
+; for describing a modern gamepad to ST software: a provider publishes a
+; shared block and installs the 'XPAD' cookie pointing at it; consumers
+; poll it. It is how MD/Lynx reaches the Lynx's Option 1/2 and Pause
+; from a pad, which a one-button ST joystick cannot express.
+;
+; This is the CONSUMER half. We locate and validate the block once at
+; boot, then read pad 0 every VBL and forward its button mask to the RP.
+; Nothing here is required: with no provider the RP falls back to the
+; IKBD joystick, which is the standard's own fallback ladder.
+;
+; Header layout (v1, big-endian, see xpad.h):
+;    0  magic       long  'XPAD'
+;    4  version     word  major<<8 | minor
+;    6  hdr_size    word
+;    8  pads_offset word
+;   10  pad_size    word
+;   12  caps        word
+;   14  seq         word   bumped on every commit, BEFORE active flips
+;   16  pad_count   byte   1..4
+;   17  active      byte   front buffer index, 0 or 1
+; XPAD_PAD (12 bytes): 0 buttons(long), 4..9 axes/triggers,
+;   10 type (0 = disconnected), 11 flags.
+; ABI equates come from the xpad submodule (lib/xpad), generated from
+; xpad.h by its own build so they cannot drift from the header. The file
+; is staged into src/inc/ by target/atarist/build.sh -- see the note
+; there about stcmd mounting only this folder.
+    include "inc/xpad.inc"
+
+; Xpad report windows: the low and high bytes of pad 0's button mask,
+; emitted every VBL as two cart-bus reads. HIGH is emitted first and the
+; RP latches it, committing the pair when the LOW byte lands, so a ring
+; drain that falls between the two reads can't tear the value.
+XPAD_HI_WINDOW_BASE   equ $FB8800
+XPAD_LO_WINDOW_BASE   equ $FB8A00
+
+; XPAD_ENABLE=1 compiles the Xpad consumer in. Off by default: it is
+; the newest code on the boot path, it dereferences a pointer handed
+; over by a third party, and until the emulator itself is proven on
+; hardware it is one variable too many. With it off the RP simply never
+; receives a report and falls back to the IKBD joystick, which is the
+; standard's own fallback ladder -- nothing else changes.
+    ifnd    XPAD_ENABLE
+XPAD_ENABLE           equ 0
+    endc
+
+; FORCE_NO_DMA=1 (build flag) forces detection to report "no DMA" so
+; the YM fallback can be exercised on an STE without a plain ST.
+    ifnd    FORCE_NO_DMA
+FORCE_NO_DMA          equ 0
+    endc
+
 ; Save area for vectors + MFP regs we'll restore on ESC exit. Lives
 ; in the top 32 bytes of the 4 KB copied-code area below ST screen
 ; memory (pre_auto in main.s relocates start_rom_code..end_rom_code
@@ -346,6 +437,114 @@ userfw:
     trap    #14
     addq.l  #2, sp
     move.l  d0, UFW_PHYSBASE_SAVE    ; saved screen base lives in RAM now
+
+    ; --- Detect STE DMA sound via the _SND cookie (bit 1) ---------
+    ; Walk the cookie jar; a null jar or a missing _SND (plain ST /
+    ; early TOS) leaves has_dma = 0 -> YM fallback. FORCE_NO_DMA=1
+    ; skips the walk entirely so the fallback can be tested on an STE.
+    ; Clobbers D0/D1/A0 -- all reloaded by the boot code that follows.
+    ;
+    ; Written out rather than shared with the Xpad walk below: a bsr
+    ; into the cartridge region is the pattern that was isolated as a
+    ; source of cart-bus instability when the framebuffer copy was a
+    ; called routine (see the fbdrv note in userfw.ld), and deduplicating
+    ; ten instructions is not worth reintroducing it.
+    moveq   #0, d0                   ; assume no DMA sound
+    ifeq    FORCE_NO_DMA
+    move.l  COOKIE_JAR_PTR.w, d1     ; cookie jar base
+    beq.s   .snd_detect_done         ; null jar -> no cookies
+    movea.l d1, a0
+.snd_cookie_loop:
+    move.l  (a0), d1                 ; cookie tag
+    beq.s   .snd_detect_done         ; tag 0 = end of jar, _SND not found
+    cmp.l   #COOKIE_SND, d1
+    beq.s   .snd_found
+    addq.l  #8, a0                   ; next 8-byte entry (tag, value)
+    bra.s   .snd_cookie_loop
+.snd_found:
+    move.l  4(a0), d1               ; _SND value
+    btst    #1, d1                  ; bit 1 = DMA / PCM sound
+    beq.s   .snd_detect_done
+    moveq   #1, d0                  ; DMA sound present
+    endc
+.snd_detect_done:
+    move.b  d0, UFW_HAS_DMA
+
+    ; --- Locate an Xpad provider (optional) -----------------------
+    ; Walk the jar for 'XPAD', then validate the block the way
+    ; xpad_valid() does: right magic, a major version we understand,
+    ; and layout fields describing a pad area that fits inside the
+    ; block. Everything the per-VBL read trusts is checked here once,
+    ; so that path is a straight load. On any failure UFW_XPAD_HDR
+    ; stays 0 and the RP never hears from us.
+    ;
+    ; The two pad-0 addresses are precomputed now (the header's layout
+    ; fields never change) so the VBL path needs no multiply:
+    ;   buffer b, pad i  =  base + pads_offset
+    ;                       + (b * pad_count + i) * pad_size
+    ; Clobbers D0/D1/D2/A0/A1 -- all reloaded by the boot code below.
+    ifne    XPAD_ENABLE
+    clr.l   UFW_XPAD_HDR
+    move.l  COOKIE_JAR_PTR.w, d1
+    beq     .xpad_done
+    movea.l d1, a0
+.xpad_cookie_loop:
+    move.l  (a0), d1                 ; cookie tag
+    beq     .xpad_done               ; tag 0 = end of jar, no Xpad
+    cmp.l   #XPAD_COOKIE, d1         ; the jar tag, not XPAD_MAGIC
+    beq.s   .xpad_found
+    addq.l  #8, a0                   ; next 8-byte entry (tag, value)
+    bra.s   .xpad_cookie_loop
+.xpad_found:
+    move.l  4(a0), d1                ; cookie value = block address
+    beq     .xpad_done
+    btst    #0, d1                   ; odd pointer would bus-error below
+    bne     .xpad_done
+    movea.l d1, a1
+    cmp.l   #XPAD_MAGIC, (a1)        ; XPAD.magic -- the block sentinel,
+                                     ; deliberately a different constant
+                                     ; from the jar tag matched above
+    bne     .xpad_done
+    cmpi.b  #XPAD_VER_MAJOR, XPAD_VERSION_OFF(a1)   ; high byte = major
+    bne     .xpad_done
+
+    moveq   #0, d0
+    move.b  XPAD_PADCOUNT_OFF(a1), d0
+    beq     .xpad_done               ; no slots at all
+    move.w  XPAD_PADSIZE_OFF(a1), d1
+    cmp.w   #XPAD_PAD_SIZE_V1, d1
+    blo     .xpad_done               ; smaller than v1 = broken provider
+
+    ; pads_offset + 2 * pad_count * pad_size must fit in hdr_size.
+    ; pad_count <= 255 and pad_size is a word, so the mulu result is
+    ; taken as a long and compared unsigned -- an absurd pad_size then
+    ; fails the test rather than wrapping into it.
+    move.w  d1, d2
+    mulu    d0, d2                   ; d2 = pad_count * pad_size (long)
+    add.l   d2, d2                   ; both buffers
+    moveq   #0, d1
+    move.w  XPAD_PADSOFF_OFF(a1), d1
+    add.l   d1, d2
+    moveq   #0, d1
+    move.w  XPAD_HDRSIZE_OFF(a1), d1
+    cmp.l   d1, d2
+    bhi     .xpad_done               ; pad area runs past the block
+
+    ; Precompute pad 0 in each buffer and publish the block pointer
+    ; last, so the VBL path never sees half-built state.
+    moveq   #0, d1
+    move.w  XPAD_PADSOFF_OFF(a1), d1
+    move.l  a1, d2
+    add.l   d1, d2
+    move.l  d2, UFW_XPAD_BUF0
+    moveq   #0, d1
+    move.w  XPAD_PADSIZE_OFF(a1), d1
+    mulu    d0, d1                   ; pad_count * pad_size = buffer stride
+    add.l   d1, d2
+    move.l  d2, UFW_XPAD_BUF1
+    move.l  a1, UFW_XPAD_HDR
+.xpad_done:
+    endc
 
     ; Save TOS's VBL vector and install ours. We're in supervisor mode
     ; (entered via CA_INIT) so writing $70.w is legal.
@@ -401,6 +600,13 @@ userfw:
     move.l  a0, VEC_TIMERB.w
     move.l  a0, VEC_TIMERA.w
 
+    ; Interrupt-driven IKBD -- install a real ACIA handler in
+    ; place of the dummy rte so keyboard + joystick bytes are read the
+    ; instant they arrive (the ACIA has a 1-byte buffer; polling loses
+    ; the multi-byte joystick packets). Enabled at the MFP below.
+    lea     userfw_acia_irq(pc), a0
+    move.l  a0, VEC_ACIA.w
+
     ; Stop both timers (kills any prior TOS event).
     clr.b   MFP_TBCR.w
     clr.b   MFP_TACR.w
@@ -411,6 +617,22 @@ userfw:
     clr.b   MFP_IERB.w
     clr.b   MFP_IMRA.w
     clr.b   MFP_IMRB.w
+
+    ; Flip the MFP Vector Register to AUTO-EOI mode (clear the S bit,
+    ; VR bit 3) for BOTH audio paths: the interrupt-driven ACIA/IKBD
+    ; handler relies on auto-EOI (it never writes an in-service ack),
+    ; so unlike md-mjpeg -- which polls the ACIA and only needs
+    ; auto-EOI for Timer-B -- this must happen before the audio-mode
+    ; branch, or the first key event on a DMA-sound machine would wedge
+    ; the MFP. (For Timer-B it additionally saves ~12 cyc per fire.)
+    move.b  28(a5), d0                    ; copy TOS's VR (saved above)
+    andi.b  #$F7, d0                      ; clear bit 3 (S) -> auto-EOI
+    move.b  d0, MFP_VR.w
+
+    ; Audio back-end chosen at runtime from UFW_HAS_DMA (detected
+    ; above). Both the YM/Timer-B and STE DMA paths are compiled in.
+    tst.b   UFW_HAS_DMA
+    bne     .boot_audio_dma          ; DMA sound present -> STE path
 
     ; --- YM2149 init: ch A + ch B as Ghostbusters dual-channel DAC
     ; Enable tones on BOTH ch A and ch B (mixer bits 0,1 = 0). Tone
@@ -448,16 +670,10 @@ userfw:
     ; very top of userfw), so no IRQ fires until SR is dropped to
     ; $2300 below.
     ;
-    ; Also flip the MFP Vector Register to AUTO-EOI mode (clear
-    ; the S bit, VR bit 3). With S=0 the MFP clears its own in-
-    ; service bit on each IACK cycle, so the Timer-B handler can
-    ; skip the explicit `move.b #$FE, MFP_ISRA.w` ACK -- saves
-    ; ~12 cyc per IRQ * ~125 IRQ/VBL = ~1500 cyc/VBL.
+    ; (The MFP is already in auto-EOI mode -- set before the audio
+    ; branch above -- so the Timer-B handler needs no in-service ack.)
     lea     userfw_timerb_audio(pc), a0
     move.l  a0, VEC_TIMERB.w
-    move.b  28(a5), d0                    ; copy TOS's VR (saved above)
-    andi.b  #$F7, d0                      ; clear bit 3 (S) -> auto-EOI
-    move.b  d0, MFP_VR.w
     move.b  #TIMERB_COUNT, MFP_TBDR.w
     move.b  #TIMERB_PRESCALER, MFP_TBCR.w
 
@@ -470,9 +686,54 @@ userfw:
 
     bset    #0, MFP_IERA.w                ; Timer-B IRQ enable (IERA bit 0)
     bset    #0, MFP_IMRA.w                ; Timer-B IRQ unmask (IMRA bit 0)
+    bra     .boot_audio_done
+
+.boot_audio_dma:
+    ; --- STE DMA sound init: mono 25033 Hz, loop mode, double-buffered.
+    ; Silence both buffers, program start/end to buffer A, start the
+    ; loop. The DMA free-runs; .after_copy refills whichever buffer the
+    ; DMA isn't reading and points the loop at it. No Timer-B, no YM.
+    lea     STE_SND_BUF_A, a0
+    move.w  #(STE_SND_BYTES/4)-1, d0
+.ste_snd_clr_a:
+    clr.l   (a0)+
+    dbf     d0, .ste_snd_clr_a
+    lea     STE_SND_BUF_B, a0
+    move.w  #(STE_SND_BYTES/4)-1, d0
+.ste_snd_clr_b:
+    clr.l   (a0)+
+    dbf     d0, .ste_snd_clr_b
+    move.b  #STE_DMA_MODE_VAL, STE_DMA_MODE.w
+    move.b  #((STE_SND_BUF_A>>16)&$FF), STE_DMA_START_HI.w
+    move.b  #((STE_SND_BUF_A>>8)&$FF), STE_DMA_START_MID.w
+    move.b  #(STE_SND_BUF_A&$FF), STE_DMA_START_LO.w
+    move.b  #((STE_SND_A_END>>16)&$FF), STE_DMA_END_HI.w
+    move.b  #((STE_SND_A_END>>8)&$FF), STE_DMA_END_MID.w
+    move.b  #(STE_SND_A_END&$FF), STE_DMA_END_LO.w
+    move.b  #$03, STE_DMA_CTRL.w          ; play + loop
+
+.boot_audio_done:
+
+    bset    #MFP_ACIA_BIT, MFP_IERB.w     ; enable keyboard/MIDI ACIA IRQ
+    bset    #MFP_ACIA_BIT, MFP_IMRB.w     ;         and unmask it
 
     ; Interrupts back on (caller's level, typically $2300).
     move.w  (sp)+, sr
+
+    ; --- Configure the IKBD for joystick play.
+    ; $12 disables mouse reporting so only keyboard + joystick share the
+    ; ACIA stream (mouse packets would otherwise desync the RP demux);
+    ; $14 puts the IKBD in joystick event-reporting mode, so it emits
+    ; $FE/$FF packets the RP demux frames into a direction+fire byte. Keyboard
+    ; scancodes continue alongside joystick events.
+.ikbd_tx_mouse:
+    btst    #1, ACIA_KBD_STATUS.w        ; MC6850 TDRE = TX data register empty
+    beq.s   .ikbd_tx_mouse
+    move.b  #$12, ACIA_KBD_DATA.w        ; IKBD: disable mouse reporting
+.ikbd_tx_joy:
+    btst    #1, ACIA_KBD_STATUS.w
+    beq.s   .ikbd_tx_joy
+    move.b  #$14, ACIA_KBD_DATA.w        ; IKBD: set joystick event reporting
 
     ; Initialise the hidden-page pointer. UFW_SCREEN_PAGE holds the
     ; page currently being drawn into; .after_copy toggles it between
@@ -551,6 +812,103 @@ userfw:
 
 .after_copy:
 
+    ; Report sound capability to the RP every VBL: one cart-bus read at
+    ; SNDCAP_WINDOW_BASE + has_dma. The RP's commemul ring decodes the
+    ; low bit and produces the matching audio format (signed PCM for
+    ; DMA, (vA,vB) YM pairs otherwise). A1/D1 are scratch.
+    moveq   #0, d1
+    move.b  UFW_HAS_DMA, d1
+    lea     SNDCAP_WINDOW_BASE, a1
+    tst.b   (a1, d1.w)
+
+    ; Report pad 0's Xpad buttons to the RP, when a provider was found
+    ; at boot. Read tear-free the way the standard prescribes: sample
+    ; seq and active, copy, then recheck both -- the provider bumps seq
+    ; before flipping active, so a mismatch means the copy straddled a
+    ; refresh and this frame is simply skipped. A disconnected slot
+    ; (type 0) is skipped too, which is what tells the RP to fall back
+    ; to the IKBD joystick. D0-D3/A1/A2 are scratch here (the page flip
+    ; below reloads D0 and uses A5); A0 is the audio cursor and is not
+    ; touched.
+    ifne    XPAD_ENABLE
+    move.l  UFW_XPAD_HDR, d1
+    beq.s   .no_xpad
+    movea.l d1, a1
+    move.w  XPAD_SEQ_OFF(a1), d3         ; seq before
+    moveq   #0, d2
+    move.b  XPAD_ACTIVE_OFF(a1), d2      ; front buffer index
+    beq.s   .xpad_buf0
+    movea.l UFW_XPAD_BUF1, a2
+    bra.s   .xpad_have_buf
+.xpad_buf0:
+    movea.l UFW_XPAD_BUF0, a2
+.xpad_have_buf:
+    move.l  (a2), d0                     ; buttons
+    tst.b   XPAD_PAD_TYPE(a2)        ; 0 = nothing in this slot
+    beq.s   .no_xpad
+    cmp.b   XPAD_ACTIVE_OFF(a1), d2      ; buffer flipped under us?
+    bne.s   .no_xpad
+    cmp.w   XPAD_SEQ_OFF(a1), d3         ; refreshed under us?
+    bne.s   .no_xpad
+    ; High byte first, low byte second -- the RP commits the pair on the
+    ; low byte, so the two reads are atomic from its side.
+    ; Only D1's low word indexes the window, so the high byte needs a
+    ; word shift (which leaves the top 8 bits clear -- no mask) and the
+    ; low byte a zero-extended byte move.
+    move.w  d0, d1
+    lsr.w   #8, d1
+    lea     XPAD_HI_WINDOW_BASE, a2
+    tst.b   (a2, d1.w)
+    moveq   #0, d1
+    move.b  d0, d1
+    lea     XPAD_LO_WINDOW_BASE, a2
+    tst.b   (a2, d1.w)
+.no_xpad:
+    endc
+
+    ; When DMA sound is active, refill the buffer the DMA is NOT reading
+    ; (double-buffer) and point the loop at it, so the write never
+    ; crosses the DMA read pointer. Bit 7 of the frame-counter mid byte
+    ; tells us the current buffer: 0 = A -> refill B; 1 = B -> refill A.
+    ; D1/D2/D3/A1/A2 are scratch (clobbered by FBDRV_INLINE; the
+    ; page-flip below uses A5/D0). 125 longwords from the cart via
+    ; move.l (a1)+,(a2)+ / dbf, which is 30 cycles an iteration =
+    ; ~3,750 cycles, ~0.47 ms of the ST's ~3 ms post-blit slack. A MOVEM
+    ; burst the way FBDRV_INLINE does it would cut that to ~0.3 ms, and
+    ; A0 is free here on the DMA path (Timer-B isn't running) -- worth
+    ; doing if the slack ever gets tight.
+    tst.b   UFW_HAS_DMA
+    beq.s   .no_dma_refill
+    btst    #7, STE_DMA_CNT_MID.w
+    bne.s   .snd_use_a                   ; DMA in B -> refill A
+    move.l  #STE_SND_BUF_B, d2           ; DMA in A -> refill B
+    bra.s   .snd_have_buf
+.snd_use_a:
+    move.l  #STE_SND_BUF_A, d2
+.snd_have_buf:
+    ; Copy one VBL of fresh signed PCM from the cart buffer into d2.
+    lea     AUDIO_BUFFER_ADDR, a1
+    movea.l d2, a2
+    move.w  #(STE_SND_BYTES/4)-1, d1
+.ste_snd_copy:
+    move.l  (a1)+, (a2)+
+    dbf     d1, .ste_snd_copy
+    ; Point the DMA loop at the just-filled buffer: start = d2,
+    ; end = d2 + STE_SND_BYTES (each split hi/mid/lo).
+    move.l  d2, d3
+    move.b  d3, STE_DMA_START_LO.w
+    lsr.l   #8, d3
+    move.b  d3, STE_DMA_START_MID.w
+    lsr.l   #8, d3
+    move.b  d3, STE_DMA_START_HI.w
+    add.l   #STE_SND_BYTES, d2
+    move.b  d2, STE_DMA_END_LO.w
+    lsr.l   #8, d2
+    move.b  d2, STE_DMA_END_MID.w
+    lsr.l   #8, d2
+    move.b  d2, STE_DMA_END_HI.w
+.no_dma_refill:
+
     ; Flip the video base to the just-written page. A5 still holds
     ; UFW_SCREEN_PAGE (preserved by FBDRV_INLINE). Only the MID byte
     ; of the screen base differs between the two pages -- HIGH was
@@ -587,6 +945,12 @@ userfw:
     ;
     ; Mask interrupts before touching MFP / vectors.
     ori.w   #$0700, sr
+
+    ; Stop DMA sound (if it was running) before GEM returns.
+    tst.b   UFW_HAS_DMA
+    beq.s   .no_dma_stop
+    move.b  #$00, STE_DMA_CTRL.w
+.no_dma_stop:
 
     ; Recompute the save-area pointer from UFW_PHYSBASE_SAVE in
     ; case anything clobbered A5 during the run.
@@ -689,6 +1053,38 @@ userfw_timerb_audio:
     rte
 
 ; -------------------------------------------------------------------
+; userfw_acia_irq -- keyboard/MIDI ACIA IRQ handler.
+;
+; Reads each IKBD byte the instant it arrives -- interrupt-driven, so no
+; byte is lost -- and forwards it to the RP over the same cart-bus
+; window the inline poll used. This is what makes multi-byte joystick
+; packets survive (polling drops them). Keyboard scancodes ride the same
+; path, so keyboard input gets more robust too.
+;
+; The keyboard and MIDI ACIAs share this one MFP interrupt (IERB bit 6),
+; so the MIDI ACIA is drained as well -- otherwise its level-asserted
+; IRQ line could re-trigger us forever. MFP is auto-EOI (VR S=0), so no
+; in-service ack. Only D0/A1 are touched, and both are saved, so the
+; handler is safe to fire mid-blit (which holds D0-D7/A1-A4 live).
+userfw_acia_irq:
+    move.l  d0, -(sp)
+    move.l  a1, -(sp)
+    lea     IKBD_WINDOW_BASE, a1
+    btst    #0, ACIA_KBD_STATUS.w         ; keyboard RX-data-ready?
+    beq.s   .acia_midi
+    moveq   #0, d0                        ; clean 0..255 word
+    move.b  ACIA_KBD_DATA.w, d0           ; read byte (clears kbd RX-full)
+    tst.b   (a1, d0.w)                    ; forward via cart-bus read
+.acia_midi:
+    btst    #0, ACIA_MIDI_STATUS.w        ; drain MIDI too (shared IRQ line)
+    beq.s   .acia_done
+    move.b  ACIA_MIDI_DATA.w, d0          ; read + discard
+.acia_done:
+    movea.l (sp)+, a1
+    move.l  (sp)+, d0
+    rte
+
+; -------------------------------------------------------------------
 ; userfw_dummy_irq -- single-rte IRQ handler for vectors we want to
 ; silence (HBL $68, Timer-A $134, Timer-C $114, Timer-D $110, ACIA
 ; $118). Stopping TOS's handlers cuts the per-frame jitter they
@@ -696,3 +1092,4 @@ userfw_timerb_audio:
 ; framebuffer template owns the screen + IKBD until ESC exit.
 userfw_dummy_irq:
     rte
+

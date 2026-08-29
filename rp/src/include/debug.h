@@ -36,9 +36,26 @@
     fprintf(stderr, fmt, ##__VA_ARGS__); \
   } while (0)
 
+/**
+ * @brief Report the heap window (end..__StackLimit) and how much of it
+ * the C runtime consumed before the caller ran. Boot-time settings init
+ * needs ~8.4 KB of it; a shortfall fails its mallocs and the app bails
+ * to Booster, so main() probes this just before gconfig_init.
+ */
+#define DPRINT_HEAP()                                                    \
+  do {                                                                   \
+    extern char end, __StackLimit;                                       \
+    void *brk = malloc(4);                                               \
+    DPRINTF("Heap: window %d B (%p..%p), break at %p, ~%d B consumed\n", \
+            (int)(&__StackLimit - &end), (void *)&end,                   \
+            (void *)&__StackLimit, brk, (int)((char *)brk - &end));      \
+    free(brk);                                                           \
+  } while (0)
+
 #else
 #define DPRINTF(fmt, ...)
 #define DPRINTFRAW(fmt, ...)
+#define DPRINT_HEAP()
 #endif
 
 #endif  // DEBUG_H

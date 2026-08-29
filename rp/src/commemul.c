@@ -8,20 +8,30 @@
 
 #include "commemul.h"
 
+#include "cart_shared.h"
 #include "commemul.pio.h"
 #include "constants.h"
 #include "debug.h"
 #include "hardware/dma.h"
 #include "hardware/pio.h"
 
-#define COMM_RING_BITS 15u
+#define COMM_RING_BITS 10u  /* ROM3 traffic is IKBD bytes plus, once per VBL, a frame
+                              ack, a sound-capability byte and two Xpad bytes --
+                              a handful of entries per drain, so 512 slots is
+                              ample headroom. Shrunk from 32K and parked in the
+                              cart-region hole so main RAM can hold the Lynx's
+                              64 KB of system RAM. */
 #define COMM_RING_SIZE_BYTES (1ul << COMM_RING_BITS)
 #define COMM_RING_WORDS (COMM_RING_SIZE_BYTES / sizeof(uint16_t))
 #define COMM_RING_MASK (COMM_RING_WORDS - 1u)
 #define COMM_DMA_TRANSFER_COUNT (0xFFFFFFFFu)
 
+/* Parked in the cartridge-region hole. The DMA ring wrap
+   still needs natural alignment, which the linker script guarantees by
+   placing the ring first in the section. */
 static uint16_t commRing[COMM_RING_WORDS]
-    __attribute__((aligned(COMM_RING_SIZE_BYTES)));
+    __attribute__((aligned(COMM_RING_SIZE_BYTES)))
+    __cart_app_free("commring");
 static uint32_t commReadIdx = 0;
 static int commDmaChannel = -1;
 static int commSm = -1;

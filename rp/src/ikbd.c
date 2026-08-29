@@ -1,6 +1,9 @@
-/**
+/*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * File: ikbd.c
- * Description: IKBD keyboard ingest + demux (keyboard-only).
+ * Description: IKBD keyboard + joystick ingest + demux.
  *
  * Raw byte ring filled by ikbd_consume_rom3_sample (called directly
  * from `commemul_poll(ikbd_consume_rom3_sample)` in the emul.c main
@@ -95,6 +98,29 @@ void ikbd_set_esc_auto_exit(bool enabled) {
   s_esc_auto_exit = enabled;
 }
 
+void ikbd_request_boot_gem(void) {
+  /* Pre-swap the longword halves so m68k's move.l sees the expected
+   * value (cart_asM68kLong). userfw's VBL loop polls this sentinel and
+   * exits to GEM on match. */
+  *((volatile uint32_t *)((uintptr_t)&__rom_in_ram_start__ +
+                          CART_CMD_SENTINEL_OFFSET)) =
+      cart_asM68kLong(CART_CMD_BOOT_GEM);
+}
+
+void ikbd_clear_command(void) {
+  /* Re-arm the command sentinel to NOP. ikbd_request_boot_gem() posts
+   * BOOT_GEM here for userfw to consume, but the m68k can't write it
+   * back (the cart region is RP-owned) and the RP only zeroes it at
+   * boot. Left set, a BOOT_GEM from an exit persists across an ST reset:
+   * the re-run userfw re-reads it and quits to GEM instead of running.
+   * Called once per main-loop iteration -- BOOT_GEM survives the single
+   * frame between the exit write and userfw's VBL read (fb_publish
+   * blocks until that read), then this wipes it. */
+  *((volatile uint32_t *)((uintptr_t)&__rom_in_ram_start__ +
+                          CART_CMD_SENTINEL_OFFSET)) =
+      cart_asM68kLong(CART_CMD_NOP);
+}
+
 size_t ikbd_ring_count(void) {
   uint8_t h = s_head;
   uint8_t t = s_tail;
@@ -134,9 +160,7 @@ static void push_key(uint8_t scancode, bool is_press) {
       s_esc_press_us = 0;
       if (s_esc_auto_exit && press != 0u &&
           (time_us_32() - press) < IKBD_ESC_RELEASE_TIMEOUT_US) {
-        *((volatile uint32_t *)((uintptr_t)&__rom_in_ram_start__ +
-                                CART_CMD_SENTINEL_OFFSET)) =
-            cart_asM68kLong(CART_CMD_BOOT_GEM);
+        ikbd_request_boot_gem();
       }
     }
   }
@@ -148,9 +172,48 @@ static void push_key(uint8_t scancode, bool is_press) {
   s_key_head = next;
 }
 
+/* Joystick support. The m68k IKBD handler forwards
+ * every byte interrupt-driven, so the multi-byte joystick packets
+ * arrive intact and this demux frames them into s_joy_state[].
+ *
+ * The two ports are kept separate and only port 1 is reported: with
+ * joystick event reporting on ($14), the mouse in port 0 reports as
+ * joystick 0, and a stationary mouse holds its quadrature lines in a
+ * fixed pattern -- a steady non-zero direction byte that, being
+ * change-triggered, latches forever. Folding both ports into one
+ * state let that phantom overwrite the real stick in port 1 (games
+ * waiting for the stick to centre would never start). */
+
+/* Latest joystick state per port (bit0 up, bit1 down, bit2 left,
+ * bit3 right, bit7 fire). [0] = port 0 (mouse), [1] = port 1. */
+static volatile uint8_t s_joy_state[2] = {0, 0};
+/* Which state bytes are still expected after a packet header, as a
+ * bit mask: bit0 = a port-0 byte, bit1 = a port-1 byte. $FD sends
+ * port 0 then port 1, so its first follow byte is the port-0 one. */
+static uint8_t s_joy_pending = 0;
+
+uint8_t ikbd_get_joystick(void) { return s_joy_state[1]; }
+
 void ikbd_pump(void) {
   uint8_t b;
   while (raw_pop(&b)) {
+    /* Consume the state byte(s) that follow a joystick packet header so
+     * they are never misclassified as key scancodes. Mask to the
+     * meaningful bits (directions + fire) so a stray byte swallowed
+     * here can't inject phantom bits that persist forever. */
+    if (s_joy_pending) {
+      if (s_joy_pending & 1u) {
+        s_joy_state[0] = b & 0x8Fu;
+        s_joy_pending &= (uint8_t)~1u;
+      } else {
+        s_joy_state[1] = b & 0x8Fu;
+        s_joy_pending = 0;
+      }
+      continue;
+    }
+    if (b == 0xFEu) { s_joy_pending = 1; continue; }  /* joystick 0 */
+    if (b == 0xFFu) { s_joy_pending = 2; continue; }  /* joystick 1 */
+    if (b == 0xFDu) { s_joy_pending = 3; continue; }  /* both, 0 then 1 */
     if (b < 0x80u) {
       push_key(b, true);
     } else if (b < 0xF2u) {
@@ -158,10 +221,8 @@ void ikbd_pump(void) {
       push_key((uint8_t)(b & 0x7Fu), false);
     }
     /* $F2..$FF: mouse / joystick / status / TOD packet headers.
-     * Mouse and joystick are disabled at boot, so these shouldn't
-     * appear in steady state. Discard the header byte; if follow
-     * bytes leak through they may emit one-shot spurious key
-     * events but the demux is always ready for the next real key. */
+     * Mouse is disabled at boot; joystick headers are handled above
+     * when the port is built. Any other header byte is discarded. */
   }
 }
 

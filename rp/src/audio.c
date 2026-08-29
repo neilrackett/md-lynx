@@ -25,20 +25,62 @@
 #include "pico/stdlib.h"
 #include "pico/time.h"
 
-/* Per-VBL fill cadence. Refill every ~20 ms (one PAL VBL) so the
- * RP keeps pace with the m68k's Timer-B reads without burning more
- * main-loop cycles than necessary. */
-#define AUDIO_FRAME_PERIOD_US 20000u
+/* Per-VBL fill cadence. The gate only exists to reject re-entry from a
+ * main loop that spins faster than the VBL; it must never skip a fill
+ * in a VBL-locked loop (every fb app blocks on fb_publish). The ST PAL
+ * VBL is ~20,032 us, so the old 20,000 us threshold left ~30 us of
+ * margin -- one jittery time_us_32() reading skipped a fill, and the
+ * m68k then replayed the previous 224 B buffer for a whole frame while
+ * the producer overran its ring. 15 ms still rejects sub-VBL re-entry
+ * but can never lose the race against a real VBL. */
+#define AUDIO_FRAME_PERIOD_US 15000u
 
-/* m68k Timer-B consumption per PAL VBL. Must stay in sync with the
- * Timer-B rate in target/atarist/src/userfw.s:
- *   TBDR=110 /4 prescaler -> 5,585.45 Hz -> 111.71 samples/VBL
- *   = 223.43 B/VBL @ 2 B/sample (dual-channel mode).
- * Rounded up to 224. The remaining ~800 B of CART_AUDIO_BUFFER_SIZE
- * is intentional headroom -- not consumed within a single VBL, but
- * left as a safety pad if the m68k's A0 cursor ever overruns its
- * per-VBL budget. */
-#define AUDIO_FILL_BYTES_PER_VBL 224u
+/* Audio back-end is chosen at RUNTIME from the m68k's _SND detection,
+ * reported over the cart bus (see fb.c / userfw.s). audio_set_mode()
+ * switches the per-VBL refill size, and the fill callback keys off
+ * audio_get_mode() to produce the matching format:
+ *  - AUDIO_MODE_YM: 5,585 Hz, 112 samples/VBL x 2 B (vA,vB) = 224 B
+ *    (m68k Timer-B, TBDR=110 /4 prescaler; ~800 B of the cart buffer
+ *    stays as overrun headroom).
+ *  - AUDIO_MODE_DMA: 25,033 Hz, 500 samples/VBL x 1 B (signed) = 500 B.
+ *  - AUDIO_MODE_SILENT: 500 B of zeros until the first report arrives
+ *    (zeros are silence for both the DMA and YM readers).
+ * Default is SILENT so nothing plays garbage before the m68k reports. */
+#define AUDIO_FILL_BYTES_YM  224u
+#define AUDIO_FILL_BYTES_DMA 500u
+
+static audio_mode_t s_audio_mode = AUDIO_MODE_SILENT;
+static uint32_t s_fill_bytes = AUDIO_FILL_BYTES_DMA;
+
+void audio_set_mode(audio_mode_t mode) {
+  if (mode == s_audio_mode) {
+    return;
+  }
+  s_audio_mode = mode;
+  s_fill_bytes = (mode == AUDIO_MODE_YM) ? AUDIO_FILL_BYTES_YM
+                                         : AUDIO_FILL_BYTES_DMA;
+  DPRINTF("audio_set_mode: %s (%u B/VBL)\n",
+          mode == AUDIO_MODE_DMA ? "STE DMA" : mode == AUDIO_MODE_YM
+                                                   ? "YM"
+                                                   : "silent",
+          (unsigned)s_fill_bytes);
+}
+
+audio_mode_t audio_get_mode(void) { return s_audio_mode; }
+
+/* Sound-capability report window (SNDCAP_WINDOW_BASE in userfw.s): the
+ * m68k reads $FB8600 + has_dma once per VBL, having probed the _SND
+ * cookie at boot. Decoding it here rather than in the ROM3 dispatcher
+ * keeps the window address and the bit-to-back-end mapping with the
+ * module that owns audio_mode_t and the refill sizes. */
+#define AUDIO_SNDCAP_HIBYTE 0x8600u
+#define AUDIO_SNDCAP_HIMASK 0xFF00u
+
+void audio_consume_rom3_sample(uint16_t addr_lsb) {
+  if ((addr_lsb & AUDIO_SNDCAP_HIMASK) == AUDIO_SNDCAP_HIBYTE) {
+    audio_set_mode((addr_lsb & 1u) ? AUDIO_MODE_DMA : AUDIO_MODE_YM);
+  }
+}
 
 static uint8_t *s_audio_buf;
 static uint32_t s_last_frame_us;
@@ -78,8 +120,7 @@ void audio_init(void) {
 
   DPRINTF("audio_init: cart buffer %u B at offset $%04X, %u B/VBL refill\n",
           (unsigned)CART_AUDIO_BUFFER_SIZE,
-          (unsigned)CART_AUDIO_BUFFER_OFFSET,
-          (unsigned)AUDIO_FILL_BYTES_PER_VBL);
+          (unsigned)CART_AUDIO_BUFFER_OFFSET, (unsigned)s_fill_bytes);
 }
 
 void audio_set_fill_callback(audio_fill_cb_t cb) {
@@ -201,5 +242,5 @@ void audio_render_frame(void) {
   }
   s_last_frame_us = now_us;
 
-  s_fill_cb(s_audio_buf, AUDIO_FILL_BYTES_PER_VBL);
+  s_fill_cb(s_audio_buf, s_fill_bytes);
 }

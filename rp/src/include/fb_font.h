@@ -71,8 +71,8 @@ static inline void __not_in_flash_func(font_align)(
 /* Print a pre-formatted string. printf-family helpers (font_printf /
  * font_print_int / font_print_uint / font_print_float) were stripped
  * to keep newlib's vsnprintf / snprintf out of the binary. See
- * fb_font.c for the rationale and fb.c's `fb_fmt_uint` for the
- * recommended pattern. */
+ * fb_font.c for the rationale and lynxemu.cpp's `fmt_uint` /
+ * `str_append` for the recommended pattern. */
 void __not_in_flash_func(font_print)(const char *text);
 
 #ifdef __cplusplus

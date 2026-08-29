@@ -74,6 +74,25 @@ set(PICO_EXTRAS_PATH "${PICO_EXTRAS_PATH}" CACHE PATH "Path to the PICO EXTRAS" 
 set(ENV{PICO_EXTRAS_PATH} "${PICO_EXTRAS_PATH}")
 message("PICO_EXTRAS_PATH: ${PICO_EXTRAS_PATH}")
 
+# FatFs (exFAT + heap LFN) is written for malloc-returns-NULL semantics:
+# f_mkdir's dir_clear() requests up to 32 KB then halves on each NULL
+# until it fits. pico-sdk's default PICO_MALLOC_PANIC=1 turns that first
+# over-ceiling request into a hard "Out of memory" panic before the
+# fallback runs. The Lynx core fills most of RAM (its 64 KB system RAM is
+# heap-allocated), so disable the panic (heap is still capped at
+# __StackLimit by _sbrk, so the cart region stays protected) and let
+# FatFs degrade gracefully. Declared before the subdirectories so every
+# target (incl. settings / FatFs) is built consistently.
+add_definitions(-DPICO_MALLOC_PANIC=0)
+
+# Newlib's full malloc grows the heap in page-rounded (4 KB) sbrk steps,
+# so with the default hard-fail _sbrk a request can die on the rounding
+# excursion even when the actual bytes fit (~3 KB of the window is
+# unreachable). Optimistic sbrk clamps an over-limit grant to
+# __StackLimit instead of failing, making the whole window usable; the
+# cap itself is unchanged, so the cart region stays protected.
+add_definitions(-DPICO_USE_OPTIMISTIC_SBRK=1)
+
 # Include build functions from Pico SDK
 include(${PICO_SDK_PATH}/pico_sdk_init.cmake)
 include(${PICO_EXTRAS_PATH}/external/pico_extras_import.cmake)
@@ -81,6 +100,12 @@ include(${PICO_EXTRAS_PATH}/external/pico_extras_import.cmake)
 # Set name of project (as PROJECT_NAME) and C/C   standards
 project(rp C CXX)
 set(CMAKE_C_STANDARD 11)
+# The Handy emulation core under lynx/ is C++; it neither throws nor uses
+# RTTI, and both cost flash we don't have to spare.
+set(CMAKE_CXX_STANDARD 17)
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
+                    $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
+                    $<$<COMPILE_LANGUAGE:CXX>:-fno-threadsafe-statics>)
 # Creates a pico-sdk subdirectory in our project for the libraries
 pico_sdk_init()
 
@@ -112,19 +137,33 @@ target_sources(${PROJECT_NAME} PRIVATE
         ikbd.c
         hw_config.c
         palette.c
-        demo_menu.c
-        demo_parallax.c
-        demo_3d.c
-        demo_sprites.c
-        demo_cojorotozoom.c
+        lynxemu.cpp
+        lynx/cart.cpp
+        lynx/eeprom.cpp
+        lynx/lynxdec.cpp
+        lynx/mikie.cpp
+        lynx/susie.cpp
+        lynx/system.cpp
         reset.c
         romemul.c
         sdcard.c
         select.c
+        xpadin.c
         settings/settings.c)
 
 # Create map/bin/hex/uf2 files
 pico_add_extra_outputs(${PROJECT_NAME})
+
+# 400 MHz sysclk (constants.h) needs the QSPI flash divider raised from
+# the board default /2 to /4: the SSI divisor must be even, and /2 would
+# put the flash SCK at 200 MHz, far over the ~133 MHz part limit (/4 =
+# 100 MHz). The divider is baked into boot_stage2 (the SDK's bs2_default
+# target), so set it on that target directly -- this fails loudly at
+# configure time if the SDK ever renames it, unlike a directory-property
+# injection which would silently no-op. The add_definitions covers the
+# app side (runtime prints / SDK uses).
+add_definitions(-DPICO_FLASH_SPI_CLKDIV=4)
+target_compile_definitions(bs2_default PRIVATE PICO_FLASH_SPI_CLKDIV=4)
 
 # Link libraries required for the project
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -154,7 +193,11 @@ target_include_directories(${PROJECT_NAME} BEFORE PRIVATE
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/include
-    ${CMAKE_CURRENT_LIST_DIR}/..)
+    ${CMAKE_CURRENT_LIST_DIR}/..
+    # Xpad ABI, straight from the submodule rather than a vendored copy,
+    # so the header the RP compiles against and the equates the m68k
+    # assembles against are the same pinned revision.
+    ${REPO_ROOT}/lib/xpad/src)
 
 
 # Use reduced space for ROMs
@@ -252,6 +295,8 @@ target_link_options(${PROJECT_NAME} PRIVATE
 find_program(CLANG_TIDY_EXE NAMES clang-tidy)
 
 if(CLANG_TIDY_EXE)
+    # C only -- the vendored Handy core under lynx/ is upstream code we
+    # deliberately keep close to its original form.
     set(CMAKE_C_CLANG_TIDY "${CLANG_TIDY_EXE}")
     message(STATUS "Found clang-tidy: ${CLANG_TIDY_EXE}")
 else()

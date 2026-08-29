@@ -1,6 +1,9 @@
-/**
+/*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * File: ikbd.h
- * Description: IKBD keyboard ingest + demux (keyboard-only).
+ * Description: IKBD keyboard + joystick ingest + demux.
  *
  * The m68k Timer-B IKBD handler (target/atarist/src/userfw.s) reads
  * the keyboard ACIA at $FFFFFC00/02 and forwards every received byte
@@ -64,6 +67,12 @@ void ikbd_consume_rom3_sample(uint16_t addr_lsb);
  * Call once per main-loop iteration. */
 void ikbd_pump(void);
 
+/* Latest Atari ST joystick state decoded by ikbd_pump: bit0 up,
+ * bit1 down, bit2 left, bit3 right, bit7 fire. Returns 0 unless the
+ * m68k side is emitting joystick event packets (userfw.s puts the
+ * IKBD into joystick event-reporting mode at boot). */
+uint8_t ikbd_get_joystick(void);
+
 /* Approximate number of raw bytes currently in the ring. */
 size_t ikbd_ring_count(void);
 
@@ -91,6 +100,19 @@ bool ikbd_pop_key(ikbd_key_event_t *out);
  * ESC events are still delivered via ikbd_pop_key() regardless of
  * the setting. */
 void ikbd_set_esc_auto_exit(bool enabled);
+
+/* Request an exit to GEM by writing CMD_BOOT_GEM to the cart sentinel
+ * (the same write the ESC auto-exit performs). Apps that own ESC use
+ * this to exit on their own trigger -- e.g. an "Exit" menu item. */
+void ikbd_request_boot_gem(void);
+
+/* Re-arm the command sentinel to CMD_NOP. Call once per main-loop
+ * iteration so a BOOT_GEM posted by ikbd_request_boot_gem() is a
+ * one-shot: userfw consumes it during the exit frame's fb_publish, then
+ * this wipes it. Without it, the value persists across an ST reset (the
+ * m68k can't clear the RP-owned region; the RP zeroes it only at boot)
+ * and the re-run userfw quits to GEM instead of running the app. */
+void ikbd_clear_command(void);
 
 #ifdef __cplusplus
 }

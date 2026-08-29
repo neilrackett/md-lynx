@@ -1,10 +1,12 @@
 {
   "uuid": "<APP_UUID>",
-  "name": "APP DEV Template",
-  "description": "Microfirmware Application Template for Atari ST",
+  "name": "MD/Lynx: Atari Lynx emulator",
+  "description": "Atari Lynx emulator for Atari ST with SidecarTridge Multi-device",
   "image": "https://placehold.co/256x256/png",
   "tags": [
     "Sample",
+    "Atari",
+    "Lynx"
   ],
   "devices": [
     "ST",

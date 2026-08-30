@@ -742,9 +742,13 @@ static void append_ms(char *buf, size_t cap, uint32_t us) {
 static void draw_about(const struct menu_style &st) {
   fb_fill_rect(st.col0 * CELL_W, 0, st.cols * CELL_W, FB_CHUNKED_H, st.bg);
 
+  char hdr[TEXT_COLS + 1];
+  hdr[0] = '\0';
+  str_append(hdr, sizeof(hdr), "MD/LYNX ");
+  str_append(hdr, sizeof(hdr), RELEASE_VERSION);
+
   int y = 3;
-  style_centred(st, y++, st.title, "MD/LYNX");
-  style_centred(st, y++, st.dim, RELEASE_VERSION);
+  style_centred(st, y++, st.title, hdr);
   y++;
   style_centred(st, y++, st.text, "ATARI LYNX EMULATOR");
   style_centred(st, y++, st.text, "neilrackett.com");

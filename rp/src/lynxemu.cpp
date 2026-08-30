@@ -672,9 +672,12 @@ static void style_centred(const struct menu_style &st, int row, uint8_t pen,
 static void draw_menu(const struct menu_style &st) {
   fb_fill_rect(st.col0 * CELL_W, 0, st.cols * CELL_W, FB_CHUNKED_H, st.bg);
 
-  /* Title hard left, version hard right, sharing the top row. */
-  text_at(st.col0 + 1, 1, st.title, "MD/LYNX");
-  text_at(st.col0 + st.cols - 1 - (int)strlen(RELEASE_VERSION), 1, st.dim,
+  /* Title and version share the top row, indented to the same columns
+   * the list items use: rows start at col0 + 2 and run a NAME_COLS-wide
+   * field, so the last text column is col0 + cols - 3. Both edges line
+   * up with the entries below. */
+  text_at(st.col0 + 2, 1, st.title, "MD/LYNX");
+  text_at(st.col0 + st.cols - 2 - (int)strlen(RELEASE_VERSION), 1, st.dim,
           RELEASE_VERSION);
 
   const int total = menu_rows_total();

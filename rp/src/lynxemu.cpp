@@ -746,9 +746,9 @@ static void draw_about(const struct menu_style &st) {
   style_centred(st, y++, st.title, "MD/LYNX");
   style_centred(st, y++, st.dim, RELEASE_VERSION);
   y++;
-  style_centred(st, y++, st.text, "LYNX EMULATOR FOR THE ST");
-  style_centred(st, y++, st.text, "BY NEIL RACKETT");
-  y++;
+  style_centred(st, y++, st.text, "ATARI LYNX EMULATOR");
+  style_centred(st, y++, st.text, "neilrackett.com");
+  y += 2;
   style_centred(st, y++, st.dim, "CORE: HANDY, ZLIB");
   style_centred(st, y++, st.dim, "(C) K. WILKINS");
   style_centred(st, y++, st.dim, "VIA XRIP/PICO-LYNX");

@@ -534,19 +534,40 @@ static void settings_label(int item, char *buf, size_t cap) {
 }
 
 /* The menu is one flat list with the settings block on top and the
- * cartridges below, the same layout as MD/Speccy. The selection is
- * held as a signed index (>= 0 cartridge, < 0 setting) so the two kinds
- * never collide, which makes the row number a plain offset: the settings
- * occupy rows 0..UI_ITEM_COUNT-1 in reverse declaration order, so EXIT
- * heads the list and VOLUME sits immediately above the first cartridge. */
-static int sel_to_row(int sel) { return sel + UI_ITEM_COUNT; }
-static int row_to_sel(int row) { return row - UI_ITEM_COUNT; }
+ * cartridges below, the same layout as MD/Speccy. The selection is held
+ * as a signed index (>= 0 cartridge, < 0 setting) so the two kinds never
+ * collide, which makes the row number very nearly a plain offset: the
+ * settings occupy rows 0..UI_ITEM_COUNT-1 in reverse declaration order,
+ * so EXIT heads the list and VOLUME sits at the bottom of the block.
+ *
+ * A blank, unselectable row separates the two groups -- but only when
+ * there are cartridges to separate from, hence menu_gap(). */
+static int menu_gap(void) { return s_game_count > 0 ? 1 : 0; }
+static int menu_rows_total(void) {
+  return UI_ITEM_COUNT + menu_gap() + s_game_count;
+}
+static bool row_is_gap(int row) {
+  return menu_gap() && row == UI_ITEM_COUNT;
+}
+static int sel_to_row(int sel) {
+  return (sel >= 0) ? sel + UI_ITEM_COUNT + menu_gap() : sel + UI_ITEM_COUNT;
+}
+static int row_to_sel(int row) {
+  return (row > UI_ITEM_COUNT) ? row - UI_ITEM_COUNT - menu_gap()
+                               : row - UI_ITEM_COUNT;
+}
 
 static void ui_move(int dir) {
-  const int total = s_game_count + UI_ITEM_COUNT;
+  const int total = menu_rows_total();
   int row = sel_to_row(s_selected) + dir;
-  if (row < 0) row = total - 1;
-  else if (row >= total) row = 0;
+  /* Wrap, then step over the separator if we landed on it. Bounded by
+   * `total` so a list that were somehow all gaps still terminates. */
+  for (int guard = 0; guard <= total; guard++) {
+    if (row < 0) row = total - 1;
+    else if (row >= total) row = 0;
+    if (!row_is_gap(row)) break;
+    row += dir;
+  }
   s_selected = row_to_sel(row);
 }
 
@@ -642,8 +663,8 @@ static void style_centred(const struct menu_style &st, int row, uint8_t pen,
   text_at(col, row, pen, s);
 }
 
-#define MENU_FIRST_ROW 4
-#define MENU_ROWS 18
+#define MENU_FIRST_ROW 3
+#define MENU_ROWS 20
 
 /* Longest cartridge name that fits: one column of indent either side. */
 #define NAME_COLS(st) ((st).cols - 4)
@@ -651,10 +672,12 @@ static void style_centred(const struct menu_style &st, int row, uint8_t pen,
 static void draw_menu(const struct menu_style &st) {
   fb_fill_rect(st.col0 * CELL_W, 0, st.cols * CELL_W, FB_CHUNKED_H, st.bg);
 
-  style_centred(st, 1, st.title, "MD/LYNX");
-  style_centred(st, 2, st.dim, RELEASE_VERSION);
+  /* Title hard left, version hard right, sharing the top row. */
+  text_at(st.col0 + 1, 1, st.title, "MD/LYNX");
+  text_at(st.col0 + st.cols - 1 - (int)strlen(RELEASE_VERSION), 1, st.dim,
+          RELEASE_VERSION);
 
-  const int total = s_game_count + UI_ITEM_COUNT;
+  const int total = menu_rows_total();
   int first = sel_to_row(s_selected) - MENU_ROWS / 2;
   if (first > total - MENU_ROWS) first = total - MENU_ROWS;
   if (first < 0) first = 0;
@@ -664,6 +687,7 @@ static void draw_menu(const struct menu_style &st) {
     const int row_idx = first + i;
     if (row_idx >= total) break;
     const int y = MENU_FIRST_ROW + i;
+    if (row_is_gap(row_idx)) continue;   /* separator: nothing to draw */
     const int item = row_to_sel(row_idx);
     const bool is_game = (item >= 0);
     const bool sel = (item == s_selected);
@@ -688,9 +712,9 @@ static void draw_menu(const struct menu_style &st) {
   }
 
   if (s_game_count == 0) {
-    style_centred(st, MENU_FIRST_ROW + UI_ITEM_COUNT + 2, PEN_WARN,
+    style_centred(st, MENU_FIRST_ROW + UI_ITEM_COUNT + 1, PEN_WARN,
                   "NO CARTRIDGES");
-    style_centred(st, MENU_FIRST_ROW + UI_ITEM_COUNT + 3, PEN_WARN, s_folder);
+    style_centred(st, MENU_FIRST_ROW + UI_ITEM_COUNT + 2, PEN_WARN, s_folder);
   }
 
   style_centred(st, TEXT_ROWS - 2, st.dim, "CURSORS  RETURN");

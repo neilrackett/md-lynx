@@ -126,6 +126,14 @@ void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar);
  * RAM). Does NOT touch the cart FB; safe to run while the m68k blits. */
 void __not_in_flash_func(fb_transpose)(void);
 
+/* As above, but only the EVEN chunked rows are read; each planar row is
+ * then duplicated into the one below. For callers that draw at a
+ * 2-row pitch (the Lynx renderer does), this halves the conversion --
+ * the odd rows are a 160-byte memcpy rather than 320 bytes of
+ * transpose, and the caller no longer fills them itself. The published
+ * image is identical. */
+void __not_in_flash_func(fb_transpose_row_doubled)(void);
+
 /* Chunk-reversed copy of the last transpose's scratch -> `planar` (the
  * cart FB). The ONLY cart-FB write; ~120 us. Call after fb_transpose()
  * and after the m68k has finished blitting the previous frame. */

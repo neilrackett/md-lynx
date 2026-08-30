@@ -55,6 +55,13 @@ extern void fb_c2p_half(uint16_t *dst,
 #define FB_C2P_HALF_SRC_BYTES (FB_CHUNKED_SIZE / 2)       /* 32000 */
 #define FB_C2P_HALF_DST_WORDS (FB_C2P_HALF_SRC_BYTES / 4) /* 8000 uint16_t */
 
+/* One screen row: 320 chunked bytes in, 160 planar bytes out (4 bpp).
+ * A row is 20 of the worker's 16-pixel blocks, so it can be driven a
+ * row at a time as cheaply as a half at a time. */
+#define FB_ROW_SRC_BYTES    FB_CHUNKED_W
+#define FB_ROW_PLANAR_BYTES (FB_CHUNKED_W / 2)
+#define FB_ROW_PAIRS        (FB_CHUNKED_H / 2)  /* 100 */
+
 /* Planar scratch buffer: c2p outputs natural row-major planar bytes
  * here; fb_chunky_to_planar then copies them to the caller's `planar`
  * (the cart FB at $FA8300) with the m68k MOVEM chunks pre-reversed.
@@ -130,6 +137,39 @@ void fb_core1_unpark(void) {
 
 void fb_chunked_clear(uint8_t color) {
   memset(fb_chunked_buffer, color, FB_CHUNKED_SIZE);
+}
+
+/* Transpose a range of EVEN chunked rows, duplicating each result into
+ * the planar row below it.
+ *
+ * A caller that draws every other row -- the Lynx renderer writes its
+ * 100 scanlines into the even rows at a 640-byte pitch -- would
+ * otherwise have to fill the odd rows itself and then watch c2p
+ * transpose 32,000 bytes it already knows the answer for. Duplicating
+ * after the transpose halves the conversion instead: 160 bytes of
+ * memcpy per row against 320 bytes of bit-twiddling. `k` counts row
+ * PAIRS, so pair k is chunked row 2k -> planar rows 2k and 2k+1. */
+static void __not_in_flash_func(fb_c2p_row_pairs)(unsigned k0, unsigned k1) {
+  uint8_t *planar = (uint8_t *)fb_planar_scratch + k0 * 2u * FB_ROW_PLANAR_BYTES;
+  const uint8_t *src = fb_chunked_buffer + k0 * 2u * FB_ROW_SRC_BYTES;
+
+  for (unsigned k = k0; k < k1; k++) {
+    fb_c2p_half((uint16_t *)planar, src, src + FB_ROW_SRC_BYTES);
+    memcpy(planar + FB_ROW_PLANAR_BYTES, planar, FB_ROW_PLANAR_BYTES);
+    planar += 2u * FB_ROW_PLANAR_BYTES;
+    src += 2u * FB_ROW_SRC_BYTES;
+  }
+}
+
+static void __not_in_flash_func(fb_c2p_pairs_bottom_job)(void *arg) {
+  (void)arg;
+  fb_c2p_row_pairs(FB_ROW_PAIRS / 2u, FB_ROW_PAIRS);
+}
+
+void __not_in_flash_func(fb_transpose_row_doubled)(void) {
+  fb_core1_dispatch(fb_c2p_pairs_bottom_job, NULL);
+  fb_c2p_row_pairs(0u, FB_ROW_PAIRS / 2u);
+  fb_core1_wait();
 }
 
 void __not_in_flash_func(fb_transpose)(void) {

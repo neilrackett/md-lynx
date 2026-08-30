@@ -78,6 +78,13 @@ int fb_init(const struct FB_MODE *mode);
  *         once per frame after drawing. */
 void fb_publish(void);
 
+/** @brief As fb_publish(), but only the EVEN rows of the chunked buffer
+ *         are converted; each planar row is duplicated into the one
+ *         below. For a caller that draws at a 2-row pitch this halves
+ *         the conversion and removes its own row-doubling pass. The
+ *         published image is identical. */
+void fb_publish_row_doubled(void);
+
 /** @brief Drain the ROM3 commemul ring once, routing each captured
  *         sample to BOTH the IKBD demux and the VBL frame-sync
  *         detector. Call from the main loop in place of a bare

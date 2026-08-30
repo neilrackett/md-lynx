@@ -55,9 +55,11 @@ In the menu, the d-pad moves and adjusts and South or Start selects. Providers f
 
 Xpad is an enhancement, never a requirement: with no provider present, the joystick and keyboard behave exactly as above. One caveat worth knowing — MD/Lynx boots from the cartridge _before_ the AUTO folder runs, so a provider installed as a TSR won't be resident yet. It has to come from something already present when the cartridge takes over.
 
-The menu's settings sit above the cartridge list: **volume**, a **speed**
-setting, a **timings** overlay, an **about** item (version, credits and the
-detected sound chip) and an **exit** item to quit back to GEM.
+With a cartridge running the menu is a panel down the right-hand side and the game carries on playing beside it. Its two colours are borrowed from the cartridge's own palette — the shifter has only sixteen and they belong to the game — so while the menu is open the picture loses the distinction between two of its colours. They're chosen as the closest pair going, so it's usually not noticeable.
+
+The settings sit above the cartridge list: **volume**, **size**, **speed**, a **timings** overlay, an **about** item (version, credits and the detected sound chip) and an **exit** item to quit back to GEM.
+
+**size** is `2X FULL` (the default), which fills the ST screen, or `1X CENTRED`, which shows the Lynx's 160x102 pixel-for-pixel in the middle of the screen with a border. 1x is smaller but exact — no doubling.
 
 **speed** is the one worth knowing about. The Lynx runs at 60 Hz and the ST's screen at 50, so `60HZ TRUE` emulates six frames for every five it shows — game speed and sound pitch stay right, at the cost of one repeated frame every tenth of a second. `50HZ SMOOTH` shows every frame instead, which is perfectly even but runs everything about 17% slow. Take your pick.
 

@@ -12,6 +12,7 @@
 
 #include "fb.h"
 
+#include <stdbool.h>
 #include <string.h>
 
 #include "audio.h"
@@ -143,12 +144,16 @@ static void fb_rom3_dispatch(uint16_t sample) {
 
 void fb_pump_rom3(void) { commemul_poll(fb_rom3_dispatch); }
 
-void fb_publish(void) {
+static void fb_publish_common(bool row_doubled) {
   /* 1. Transpose chunked -> planar SCRATCH (RP RAM, dual-core). This is
    *    the slow part (~1 ms) but it does NOT touch the cart FB, so it
    *    runs unsynchronized and overlaps the m68k's blit of the previous
    *    frame. */
-  fb_transpose();
+  if (row_doubled) {
+    fb_transpose_row_doubled();
+  } else {
+    fb_transpose();
+  }
 
   /* 2. Block until the m68k has finished blitting the previous frame
    *    (its VBLSYNC ack) so the cart FB is free to overwrite. Drain the
@@ -173,3 +178,7 @@ void fb_publish(void) {
   __sync_synchronize();
   *fb_frame_counter = fb_frame_tick;
 }
+
+void fb_publish(void) { fb_publish_common(false); }
+
+void fb_publish_row_doubled(void) { fb_publish_common(true); }

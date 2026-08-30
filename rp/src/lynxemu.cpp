@@ -14,9 +14,11 @@
  *
  * Display path: Mikey renders its 160x102 screen as four-bit pen indices
  * doubled horizontally, straight into the chunked framebuffer (see the
- * MD/Lynx changes in lynx/mikie.cpp); double_rows() below fills in the
- * odd rows. That is 320x204, of which the first and last Lynx scanlines
- * fall outside the ST screen, so the remaining 320x200 fills it exactly.
+ * MD/Lynx changes in lynx/mikie.cpp); the chunky-to-planar pass fills
+ * in the odd rows, so nothing here touches them. That is 320x204, of
+ * which the first and last Lynx scanlines fall outside the ST screen,
+ * so the remaining 320x200 fills it exactly. The menu offers a 1x mode
+ * that centres the unscaled 160x102 image instead.
  * The Lynx's 16 on-screen colours go straight to the ST/STE shifter
  * palette, so no colour is quantised away.
  *
@@ -121,14 +123,22 @@ static const uint16_t MenuPalette[PALETTE_ENTRIES] = {
 
 /* ============================== State ==================================== */
 
-/* Mikey's render target. It writes 2x-scaled pen indices directly into
- * the chunked framebuffer at a 640-byte pitch (see MDLYNX_DISPLAY_PITCH
- * in lynx/mikie.h), so Lynx scanline 1 lands on chunked row 0 -- which
- * is why the base sits one scanline BELOW the buffer, in its guard
- * band, and Lynx scanlines 0 and 101 land in the guards and are never
- * displayed. Doing it this way saves a 16 KB intermediate buffer the
- * RP2040 has no room for. */
-#define LYNX_FB_BASE (fb_chunked_buffer - MDLYNX_DISPLAY_PITCH)
+/* Mikey's render target, which is the chunked framebuffer itself -- no
+ * intermediate, which is what the RP2040 has no room for.
+ *
+ * At 2x it writes doubled pens at a 640-byte pitch, so Lynx scanline 1
+ * lands on chunked row 0: the base sits one scanline BELOW the buffer,
+ * in its guard band, and scanlines 0 and 101 land in the guards and are
+ * never displayed. That is the "320x204 cropped top and bottom" the
+ * port is built around.
+ *
+ * At 1x it writes 160 bytes on consecutive rows, centred in the 320x200
+ * screen, and all 102 scanlines are visible with a border around them. */
+#define LYNX_FB_BASE_2X (fb_chunked_buffer - MDLYNX_DISPLAY_PITCH(2))
+#define LYNX_1X_X0 ((FB_CHUNKED_W - HANDY_SCREEN_WIDTH) / 2)   /* 80 */
+#define LYNX_1X_Y0 ((FB_CHUNKED_H - HANDY_SCREEN_HEIGHT) / 2)  /* 49 */
+#define LYNX_FB_BASE_1X \
+  (fb_chunked_buffer + LYNX_1X_Y0 * FB_CHUNKED_W + LYNX_1X_X0)
 
 /* Stereo scratch Mikey mixes into (system.h: gAudioBuffer). Reset to
  * empty before every UpdateFrame so the front-end knows exactly how
@@ -159,6 +169,11 @@ static CSystem *s_lynx;
 static uint32_t s_volume = 16;    /* 0..20                              */
 static uint32_t s_full_speed = 1; /* 1 = true 60 Hz, 0 = 50 Hz (slower) */
 static uint32_t s_show_perf;      /* overlay emulation timings in play  */
+static uint32_t s_scale = 2;      /* 2 = fill the screen, 1 = centred    */
+
+/* The two cartridge pens the overlay panel borrows while it is open;
+ * picked by choose_overlay_pens() below. */
+static uint8_t s_ov_bg = 0, s_ov_ink = 1;
 
 static int s_menu_active = 1;
 static int s_about_active;
@@ -244,21 +259,30 @@ static void publish_lynx_palette(void) {
     entries[i] = lynx_to_st(p[i].Colours.Red, p[i].Colours.Green,
                             p[i].Colours.Blue);
   }
+  /* While the overlay is up, the two pens it borrowed are forced to a
+   * readable pair. The picture behind loses the distinction between
+   * them for as long as the menu is open -- they were picked as the
+   * closest pair precisely so that costs the least. */
+  if (s_menu_active || s_about_active) {
+    entries[s_ov_bg] = PALETTE_RGB(0, 0, 2);
+    entries[s_ov_ink] = PALETTE_RGB(7, 7, 7);
+  }
   palette_set(entries);
 }
 
 /* =========================== Display scaling ============================= */
 
-/* Finish the 2x scale. Mikey already wrote every Lynx scanline doubled
- * horizontally into even chunked rows; this fills the odd rows in
- * between, completing 320x204 of which the ST shows the middle 320x200.
- * ~100 row copies, a few tens of microseconds. */
-static void __not_in_flash_func(double_rows)(void) {
-  uint8_t *row = fb_chunked_buffer;
-  for (int y = 0; y < FB_CHUNKED_H / 2; y++) {
-    memcpy(row + FB_CHUNKED_W, row, FB_CHUNKED_W);
-    row += 2 * FB_CHUNKED_W;
-  }
+/* Point Mikey at the right place in the framebuffer for the current
+ * scale and clear whatever the previous one left behind (at 1x the
+ * border is never written again, and at 2x the odd rows are filled
+ * during the planar conversion rather than here). Call after creating
+ * CSystem and whenever the setting changes. */
+static void apply_scale(void) {
+  if (s_lynx == NULL) return;
+  s_lynx->mMikie->SetDisplayScale((UBYTE)s_scale);
+  gPrimaryFrameBuffer =
+      (s_scale == 1) ? LYNX_FB_BASE_1X : LYNX_FB_BASE_2X;
+  fb_chunked_clear(0);
 }
 
 /* ============================ Audio plumbing ============================= */
@@ -441,11 +465,11 @@ static void scan_games(void) {
   DPRINTF("Found %d cartridge(s) in %s\n", s_game_count, s_folder);
 }
 
-/* Strip the extension for display, truncating to what fits the menu
- * column (indented by 3 cells, with a 2-cell margin the other side). */
-#define NAME_COLS (TEXT_COLS - 6)
-static void display_name(const struct game_entry *g, char *out, size_t cap) {
-  if (cap > NAME_COLS + 1u) cap = NAME_COLS + 1u;
+/* Strip the extension for display, truncating to the caller's column
+ * budget -- the overlay panel is narrower than the full-screen menu. */
+static void display_name(const struct game_entry *g, char *out, size_t cap,
+                         int cols) {
+  if (cols > 0 && cap > (size_t)cols + 1u) cap = (size_t)cols + 1u;
   strncpy(out, g->name, cap - 1);
   out[cap - 1] = '\0';
   char *dot = strrchr(out, '.');
@@ -455,13 +479,15 @@ static void display_name(const struct game_entry *g, char *out, size_t cap) {
 /* ================================= Menu ================================== */
 
 #define UI_ITEM_VOLUME 0
-#define UI_ITEM_SPEED 1
-#define UI_ITEM_PERF 2
-#define UI_ITEM_ABOUT 3
-#define UI_ITEM_EXIT 4
-#define UI_ITEM_COUNT 5
+#define UI_ITEM_SCALE 1
+#define UI_ITEM_SPEED 2
+#define UI_ITEM_PERF 3
+#define UI_ITEM_ABOUT 4
+#define UI_ITEM_EXIT 5
+#define UI_ITEM_COUNT 6
 
 static const char *SpeedNames[2] = {"50HZ SMOOTH", "60HZ TRUE"};
+static const char *ScaleNames[2] = {"1X CENTRED", "2X FULL"};
 static const char *OnOffNames[2] = {"OFF", "ON"};
 
 /* Menu items live ABOVE the games in the same list: index >= 0 is a
@@ -473,6 +499,10 @@ static void settings_label(int item, char *buf, size_t cap) {
     case UI_ITEM_VOLUME:
       str_append(buf, cap, "VOLUME: ");
       str_append(buf, cap, fmt_uint(s_volume, digits, sizeof(digits)));
+      break;
+    case UI_ITEM_SCALE:
+      str_append(buf, cap, "SIZE: ");
+      str_append(buf, cap, ScaleNames[s_scale == 2u ? 1 : 0]);
       break;
     case UI_ITEM_SPEED:
       str_append(buf, cap, "SPEED: ");
@@ -489,7 +519,7 @@ static void settings_label(int item, char *buf, size_t cap) {
 }
 
 /* The menu is one flat list with the settings block on top and the
- * cartridges below it, the same layout as MD/Speccy. The selection is
+ * cartridges below, the same layout as MD/Speccy. The selection is
  * held as a signed index (>= 0 cartridge, < 0 setting) so the two kinds
  * never collide, which makes the row number a plain offset: the settings
  * occupy rows 0..UI_ITEM_COUNT-1 in reverse declaration order, so EXIT
@@ -514,6 +544,10 @@ static void ui_adjust(int dir) {
       if (dir > 0 && s_volume < 20) s_volume++;
       else if (dir < 0 && s_volume > 0) s_volume--;
       break;
+    case UI_ITEM_SCALE:
+      s_scale = (dir > 0) ? 2u : 1u;
+      apply_scale();
+      break;
     case UI_ITEM_SPEED: s_full_speed = (dir > 0); break;
     case UI_ITEM_PERF: s_show_perf = (dir > 0); break;
     default: break;
@@ -532,18 +566,80 @@ static void ui_select(void) {
   }
 }
 
+/* ---------------------------------------------------------------------
+ * The menu is drawn two ways from one renderer.
+ *
+ * With a cartridge running it is a panel down the right-hand side, the
+ * game still playing beside and behind it -- MD/Speccy's arrangement,
+ * wider because there is more screen here. With no cartridge loaded
+ * there is nothing to overlay, so it takes the whole screen and its own
+ * palette.
+ *
+ * The panel case cannot bring its own colours: the shifter palette
+ * belongs to the running cartridge. It borrows two of the cartridge's
+ * sixteen pens instead (see choose_overlay_pens), which is why a style
+ * carries pen numbers rather than the fixed PEN_* constants.
+ * -------------------------------------------------------------------- */
+
+/* Panel is 26 columns of the 40, leaving 14 (112 px) of game visible. */
+#define OV_COL0 14
+#define OV_COLS (TEXT_COLS - OV_COL0)
+
+struct menu_style {
+  int col0;      /* leftmost text column                     */
+  int cols;      /* width in columns                         */
+  uint8_t bg;    /* panel fill, and the ink of a selected row */
+  uint8_t text;  /* cartridge names                          */
+  uint8_t title; /* headings                                 */
+  uint8_t hi;    /* selection bar                            */
+  uint8_t dim;   /* settings rows and footers                */
+};
+
+static struct menu_style overlay_style(void) {
+  struct menu_style st;
+  st.col0 = OV_COL0;
+  st.cols = OV_COLS;
+  st.bg = s_ov_bg;
+  st.text = s_ov_ink;
+  st.title = s_ov_ink;
+  st.hi = s_ov_ink;
+  st.dim = s_ov_ink;
+  return st;
+}
+
+static struct menu_style fullscreen_style(void) {
+  struct menu_style st;
+  st.col0 = 0;
+  st.cols = TEXT_COLS;
+  st.bg = PEN_BG;
+  st.text = PEN_TEXT;
+  st.title = PEN_TITLE;
+  st.hi = PEN_HILITE;
+  st.dim = PEN_DIM;
+  return st;
+}
+
+/* Centre `s` within the style's column span. */
+static void style_centred(const struct menu_style &st, int row, uint8_t pen,
+                          const char *s) {
+  int col = st.col0 + (st.cols - (int)strlen(s)) / 2;
+  if (col < st.col0) col = st.col0;
+  text_at(col, row, pen, s);
+}
+
 #define MENU_FIRST_ROW 4
 #define MENU_ROWS 18
 
-static void draw_menu(void) {
-  fb_chunked_clear(PEN_BG);
+/* Longest cartridge name that fits: one column of indent either side. */
+#define NAME_COLS(st) ((st).cols - 4)
 
-  text_centred(1, PEN_TITLE, "MD/LYNX -- ATARI LYNX EMULATOR");
-  text_centred(2, PEN_DIM, RELEASE_VERSION);
+static void draw_menu(const struct menu_style &st) {
+  fb_fill_rect(st.col0 * CELL_W, 0, st.cols * CELL_W, FB_CHUNKED_H, st.bg);
+
+  style_centred(st, 1, st.title, "MD/LYNX");
+  style_centred(st, 2, st.dim, RELEASE_VERSION);
 
   const int total = s_game_count + UI_ITEM_COUNT;
-  /* Settings first, then the cartridges; scroll so the highlighted row
-   * stays near the middle of the window. */
   int first = sel_to_row(s_selected) - MENU_ROWS / 2;
   if (first > total - MENU_ROWS) first = total - MENU_ROWS;
   if (first < 0) first = 0;
@@ -558,35 +654,32 @@ static void draw_menu(void) {
     const bool sel = (item == s_selected);
 
     if (is_game) {
-      display_name(&s_games[item], line, sizeof(line));
+      display_name(&s_games[item], line, sizeof(line), NAME_COLS(st));
     } else {
       settings_label(-item - 1, line, sizeof(line));
     }
 
     if (sel) {
-      fb_fill_rect(2 * CELL_W, y * CELL_H, (TEXT_COLS - 4) * CELL_W, CELL_H,
-                   PEN_HILITE);
-      text_at(3, y, PEN_BG, line);
+      fb_fill_rect((st.col0 + 1) * CELL_W, y * CELL_H,
+                   (st.cols - 2) * CELL_W, CELL_H, st.hi);
+      text_at(st.col0 + 2, y, st.bg, line);
     } else {
       /* The cartridge currently in flash reads back in the title colour
        * so ESC-ing out of a game shows at a glance what is running. */
       const uint8_t pen =
-          !is_game ? PEN_DIM : (item == s_loaded ? PEN_TITLE : PEN_TEXT);
-      text_at(3, y, pen, line);
+          !is_game ? st.dim : (item == s_loaded ? st.title : st.text);
+      text_at(st.col0 + 2, y, pen, line);
     }
   }
 
   if (s_game_count == 0) {
-    /* Sits below the settings rows, which is all the list has. */
-    char msg[TEXT_COLS + 1];
-    msg[0] = '\0';
-    str_append(msg, sizeof(msg), "NO CARTRIDGES IN ");
-    str_append(msg, sizeof(msg), s_folder);
-    text_centred(MENU_FIRST_ROW + UI_ITEM_COUNT + 2, PEN_WARN, msg);
+    style_centred(st, MENU_FIRST_ROW + UI_ITEM_COUNT + 2, PEN_WARN,
+                  "NO CARTRIDGES");
+    style_centred(st, MENU_FIRST_ROW + UI_ITEM_COUNT + 3, PEN_WARN, s_folder);
   }
 
-  text_centred(TEXT_ROWS - 2, PEN_DIM, "CURSORS MOVE  RETURN SELECT");
-  text_centred(TEXT_ROWS - 1, PEN_DIM, "ESC MENU  ALT/SPACE FIRE");
+  style_centred(st, TEXT_ROWS - 2, st.dim, "CURSORS  RETURN");
+  style_centred(st, TEXT_ROWS - 1, st.dim, "ESC CLOSES");
 }
 
 /* Append the rolling frame rate as "N.M". */
@@ -606,45 +699,79 @@ static void append_ms(char *buf, size_t cap, uint32_t us) {
   str_append(buf, cap, "MS");
 }
 
-static void draw_about(void) {
-  fb_chunked_clear(PEN_BG);
+/* Kept inside 26 columns so the same text serves the overlay panel. */
+static void draw_about(const struct menu_style &st) {
+  fb_fill_rect(st.col0 * CELL_W, 0, st.cols * CELL_W, FB_CHUNKED_H, st.bg);
+
   int y = 3;
-  text_centred(y++, PEN_TITLE, "MD/LYNX");
-  text_centred(y++, PEN_DIM, RELEASE_VERSION);
+  style_centred(st, y++, st.title, "MD/LYNX");
+  style_centred(st, y++, st.dim, RELEASE_VERSION);
   y++;
-  text_centred(y++, PEN_TEXT, "ATARI LYNX EMULATOR FOR THE ST");
-  text_centred(y++, PEN_TEXT, "BY NEIL RACKETT");
+  style_centred(st, y++, st.text, "LYNX EMULATOR FOR THE ST");
+  style_centred(st, y++, st.text, "BY NEIL RACKETT");
   y++;
-  text_centred(y++, PEN_DIM, "EMULATION CORE: HANDY");
-  text_centred(y++, PEN_DIM, "(C) K. WILKINS, ZLIB LICENCE");
-  text_centred(y++, PEN_DIM, "RP2040 PORT VIA XRIP/PICO-LYNX");
+  style_centred(st, y++, st.dim, "CORE: HANDY, ZLIB");
+  style_centred(st, y++, st.dim, "(C) K. WILKINS");
+  style_centred(st, y++, st.dim, "VIA XRIP/PICO-LYNX");
   y++;
 
   char buf[TEXT_COLS + 1];
   buf[0] = '\0';
   str_append(buf, sizeof(buf), "SOUND: ");
   switch (audio_get_mode()) {
-    case AUDIO_MODE_DMA: str_append(buf, sizeof(buf), "STE DMA 25KHZ"); break;
-    case AUDIO_MODE_YM: str_append(buf, sizeof(buf), "YM2149 5.6KHZ"); break;
+    case AUDIO_MODE_DMA: str_append(buf, sizeof(buf), "STE DMA"); break;
+    case AUDIO_MODE_YM: str_append(buf, sizeof(buf), "YM2149"); break;
     default: str_append(buf, sizeof(buf), "DETECTING"); break;
   }
-  text_centred(y++, PEN_TEXT, buf);
+  style_centred(st, y++, st.text, buf);
 
   buf[0] = '\0';
   str_append(buf, sizeof(buf), "EMU ");
   append_ms(buf, sizeof(buf), s_perf_emu_us);
-  str_append(buf, sizeof(buf), "  FPS ");
+  str_append(buf, sizeof(buf), " FPS ");
   append_fps(buf, sizeof(buf));
-  text_centred(y++, PEN_DIM, buf);
+  style_centred(st, y++, st.dim, buf);
 
   buf[0] = '\0';
   str_append(buf, sizeof(buf), "DSP ");
   append_ms(buf, sizeof(buf), s_perf_disp_us);
-  str_append(buf, sizeof(buf), "  PUB ");
+  str_append(buf, sizeof(buf), " PUB ");
   append_ms(buf, sizeof(buf), s_perf_pub_us);
-  text_centred(y++, PEN_DIM, buf);
+  style_centred(st, y++, st.dim, buf);
 
-  text_centred(TEXT_ROWS - 2, PEN_DIM, "PRESS ANY KEY");
+  style_centred(st, TEXT_ROWS - 2, st.dim, "PRESS ANY KEY");
+}
+
+/* Pens the overlay borrows: the closest pair in the cartridge's own
+ * palette, because collapsing two near-identical colours is the least
+ * the picture can lose. Chosen once when the menu opens, so a game
+ * animating its palette doesn't make the panel flicker. */
+static void choose_overlay_pens(void) {
+  if (s_lynx == NULL) return;
+  const TPALETTE *p = s_lynx->mMikie->GetPalette();
+  int best = 1 << 30;
+  s_ov_bg = 0;
+  s_ov_ink = 1;
+  for (int i = 0; i < PALETTE_ENTRIES; i++) {
+    for (int j = i + 1; j < PALETTE_ENTRIES; j++) {
+      const int dr = (int)p[i].Colours.Red - (int)p[j].Colours.Red;
+      const int dg = (int)p[i].Colours.Green - (int)p[j].Colours.Green;
+      const int db = (int)p[i].Colours.Blue - (int)p[j].Colours.Blue;
+      const int d = dr * dr + dg * dg + db * db;
+      if (d < best) {
+        best = d;
+        s_ov_bg = (uint8_t)i;
+        s_ov_ink = (uint8_t)j;
+      }
+    }
+  }
+}
+
+/* Draw the menu or the About page as a panel over the running game. */
+static void draw_overlay(void) {
+  const struct menu_style st = overlay_style();
+  if (s_about_active) draw_about(st);
+  else draw_menu(st);
 }
 
 static void draw_loading(const char *name) {
@@ -663,7 +790,7 @@ static void load_game(int index) {
   struct game_entry *g = &s_games[index];
 
   char shown[TEXT_COLS + 1];
-  display_name(g, shown, sizeof(shown));
+  display_name(g, shown, sizeof(shown), TEXT_COLS - 4);
   draw_loading(shown);
 
   char path[128];
@@ -708,6 +835,7 @@ static void load_game(int index) {
   str_append(eep, sizeof(eep), ".eep");
   s_lynx->mEEPROM->SetFilename(eep);
   s_lynx->mEEPROM->Load();
+  apply_scale();
 
   s_loaded = index;
   s_menu_active = 0;
@@ -717,7 +845,6 @@ static void load_game(int index) {
   s_frame_acc = 0;
   s_audio_head = s_audio_tail = 0;
   s_audio_last = 0;
-  fb_chunked_clear(0);
   publish_lynx_palette();
   DPRINTF("Loaded %s (%u bytes)\n", g->name, (unsigned)g->size);
 }
@@ -779,6 +906,7 @@ static uint16_t xpad_to_lynx(uint16_t b) {
 static void toggle_menu(void) {
   if (s_lynx == NULL) return; /* nothing to go back to yet */
   s_menu_active = !s_menu_active;
+  if (s_menu_active) choose_overlay_pens();
   if (!s_menu_active) {
     s_menu_left_at_tick = s_tick;
     s_key_buttons = 0;
@@ -943,17 +1071,21 @@ static void account(uint32_t emu_us, uint32_t disp_us, uint32_t pub_us) {
 void lynxemu_render_frame(void) {
   const uint32_t t0 = time_us_32();
 
-  /* Menu (or no cartridge yet): the emulator is idle and the ST just
-   * gets the menu frame. drive_menu_from_joystick() can load a
-   * cartridge, which clears s_menu_active -- so re-test afterwards and
-   * fall through into play on the very same VBL. */
   poll_xpad_menu_toggle();
-  if (s_menu_active || s_lynx == NULL) {
+  const bool overlay = (s_menu_active || s_about_active);
+  if (overlay || s_lynx == NULL) {
     drive_menu_from_pad();
   }
-  if (s_menu_active || s_lynx == NULL) {
-    if (s_about_active) draw_about();
-    else draw_menu();
+
+  /* No cartridge yet: there is nothing to overlay onto, so the menu
+   * takes the whole screen with its own palette. (drive_menu_from_pad
+   * may have just loaded one, so this is re-tested rather than folded
+   * into the branch above -- a cartridge picked this frame drops
+   * straight into play.) */
+  if (s_lynx == NULL) {
+    const struct menu_style st = fullscreen_style();
+    if (s_about_active) draw_about(st);
+    else draw_menu(st);
     palette_set(MenuPalette);
     const uint32_t t1 = time_us_32();
     fb_publish();
@@ -962,7 +1094,10 @@ void lynxemu_render_frame(void) {
     return;
   }
 
-  s_lynx->SetButtonData(s_key_buttons | pad_buttons());
+  /* Play, or the menu overlaid on it. The game keeps running behind the
+   * panel -- that is the point of an overlay -- but its controls are
+   * held so navigating the menu doesn't also drive the game. */
+  s_lynx->SetButtonData(overlay ? 0u : (s_key_buttons | pad_buttons()));
 
   /* Six emulated 60 Hz frames per five ST VBLs keeps game speed and
    * audio pitch correct; the intermediate frame is emulated but not
@@ -984,10 +1119,17 @@ void lynxemu_render_frame(void) {
 
   const uint32_t td0 = time_us_32();
   publish_lynx_palette();
-  double_rows();
+  if (s_menu_active || s_about_active) draw_overlay();
   if (s_show_perf) draw_perf_overlay();
   const uint32_t td1 = time_us_32();
-  fb_publish();
+  /* At 2x only the even rows hold fresh pixels, so the conversion
+   * duplicates each planar row instead of transposing the copy. At 1x
+   * every row is real. */
+  if (s_scale == 2) {
+    fb_publish_row_doubled();
+  } else {
+    fb_publish();
+  }
   account(emu_us, td1 - td0, time_us_32() - td1);
   s_tick++;
 }
@@ -999,7 +1141,7 @@ void lynxemu_init(void) {
    * which posts the same cart-bus command the auto-exit would have. */
   ikbd_set_esc_auto_exit(false);
 
-  gPrimaryFrameBuffer = LYNX_FB_BASE;
+  gPrimaryFrameBuffer = LYNX_FB_BASE_2X;
   gAudioBuffer = s_lynx_audio;
   gAudioEnabled = FALSE;
 

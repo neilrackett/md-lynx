@@ -347,14 +347,33 @@ block erases; a 256 KB cartridge takes a couple of seconds, during which the
 ST keeps displaying the last published frame (the "LOADING" screen).
 
 **Display path.** `CMikie::DisplayRenderLine` writes the raw 4-bit Lynx pen
-index, doubled horizontally, straight into `fb_chunked_buffer` at a 640-byte
-pitch (`MDLYNX_DISPLAY_PITCH`), so each Lynx scanline lands on an even ST row;
-`double_rows()` fills the odd rows afterwards. `gPrimaryFrameBuffer` is set one
-scanline *below* the buffer, so Lynx line 1 lands on ST row 0 and Lynx lines 0
-and 101 land in the guard bands and are never seen — that is the "320×204 with
-two pixels cropped top and bottom" the port targets, and it needs no
-intermediate buffer. Rotated cartridges (Gauntlet and friends) render upright;
-nothing calls `SetRotation()`, exactly as upstream pico-lynx ships.
+index straight into `fb_chunked_buffer`, at a pitch of `320 × scale`
+(`MDLYNX_DISPLAY_PITCH`), so no intermediate buffer is needed.
+`CMikie::SetDisplayScale()` sets the pitch and the horizontal doubling
+together, and `apply_scale()` in the front-end moves `gPrimaryFrameBuffer` to
+match:
+
+- **2×** (default): pens doubled horizontally, each Lynx scanline landing on an
+  even ST row. The base sits one scanline *below* the buffer, so Lynx line 1
+  lands on ST row 0 and lines 0 and 101 land in the guard bands and are never
+  seen — the "320×204 with two pixels cropped top and bottom" the port targets.
+  The odd rows are filled during the conversion, not here.
+- **1×**: 160 bytes on consecutive rows, centred at (80, 49), all 102 scanlines
+  visible inside a border. The border is written once by `apply_scale()`'s clear
+  and never touched again.
+
+Rotated cartridges (Gauntlet and friends) render upright; nothing calls
+`SetRotation()`, exactly as upstream pico-lynx ships.
+
+**Row doubling happens in planar space, not chunky.** At 2× only the even
+chunked rows hold real pixels. Filling the odd ones before conversion would make
+the c2p transpose 32,000 bytes it already knows the answer for, so
+`fb_publish_row_doubled()` (`fb_transpose_row_doubled` in `fb_chunked.c`)
+converts one row at a time and `memcpy`s each 160-byte planar result into the
+row below — 160 bytes of copy against 320 bytes of bit-twiddling, and the
+front-end drops its own doubling pass entirely. Same published image, roughly
+290 µs/frame cheaper. `fb_publish()` (full 200-row transpose) is what the 1×
+path and the boot splash use.
 
 **Palette.** The Lynx and the ST both show 16 colours at once, so
 `publish_lynx_palette()` copies Mikey's `mPalette[]` to the shifter every frame
@@ -401,13 +420,27 @@ the ST joystick and the Xpad into one Lynx pad state, and `menu_nav_bits()`
 does the same for menu navigation so a single edge detector covers both.
 
 In the menu the cursor keys navigate and adjust, Return/Space select, and ESC
-goes back to the game. The menu is drawn full-screen with its own palette (the
-running cartridge owns the palette otherwise) and highlights the cartridge
-currently in flash. It is one flat list with the settings block on top and
+goes back to the game. It is one flat list with the settings block on top and
 the cartridges below, the same layout as MD/Speccy: `sel_to_row()` is a plain
 `+ UI_ITEM_COUNT` offset, so the settings land in reverse declaration order
 with EXIT heading the list and VOLUME immediately above the first cartridge,
-and it opens on that first cartridge with the settings scrolled above it.
+and it opens on that first cartridge with the settings scrolled above it. The
+cartridge currently in flash is drawn in the title colour.
+
+**Two geometries, one renderer.** With a cartridge running the menu is a
+26-column panel down the right-hand side, drawn over the frame the emulator
+just produced, with the game still running behind it (its controls are held so
+navigating doesn't also drive the game). With no cartridge loaded there is
+nothing to overlay onto, so it takes the whole screen and uses `MenuPalette`.
+`struct menu_style` carries the geometry and the pen numbers; `draw_menu()` and
+`draw_about()` each take one.
+
+The panel cannot bring its own colours — the shifter's sixteen belong to the
+cartridge. `choose_overlay_pens()` borrows two, picked as the closest pair in
+the cartridge's palette (collapsing two near-identical colours costs the
+picture least), and `publish_lynx_palette()` forces those two to navy and white
+while the overlay is up. They are chosen once on open, so a game animating its
+palette doesn't make the panel flicker.
 
 **Xpad.** [Xpad](https://github.com/neilrackett/atarist-xpad) is an open
 standard for describing a modern gamepad to ST software: a provider publishes

@@ -115,7 +115,7 @@ CMikie::CMikie(CSystem& parent, ULONG2 displayformat, ULONG2 samplerate)
    mpRamPointer=NULL;
    mDisplayFormat=displayformat;
    mAudioSampleRate=samplerate;
-   mDisplayPitch=MDLYNX_DISPLAY_PITCH;   // MD/Lynx: 2x-scaled host rows
+   SetDisplayScale(2);   // MD/Lynx: 2x by default; sets mDisplayPitch too
 
    mUART_CABLE_PRESENT=FALSE;
    mpUART_TX_CALLBACK=NULL;
@@ -1008,7 +1008,11 @@ inline ULONG2 CMikie::DisplayRenderLine(void)
             // identical bytes (endian-agnostic, and one store instead of
             // two); the row start is 640-byte aligned so the halfword
             // stores are always aligned.
+            if(mMDLynxScale==2)
             {
+               // Doubled: one UWORD of two identical bytes per pen is
+               // endian-agnostic and one store instead of two. Rows
+               // start 640-byte aligned, so the halfwords are aligned.
                UWORD *out=(UWORD*)bitmap_tmp;
                for(loop=0;loop<HANDY_SCREEN_WIDTH/2;loop++)
                {
@@ -1028,6 +1032,26 @@ inline ULONG2 CMikie::DisplayRenderLine(void)
                   }
                   *(out++)=(UWORD)(p0|(p0<<8));
                   *(out++)=(UWORD)(p1|(p1<<8));
+               }
+            }
+            else
+            {
+               // 1:1, the front-end centres it in the ST screen.
+               for(loop=0;loop<HANDY_SCREEN_WIDTH/2;loop++)
+               {
+                  source=mpRamPointer[mLynxAddr];
+                  if(mDISPCTL_Flip)
+                  {
+                     mLynxAddr--;
+                     *(bitmap_tmp++)=(UBYTE)(source&0x0f);
+                     *(bitmap_tmp++)=(UBYTE)(source>>4);
+                  }
+                  else
+                  {
+                     mLynxAddr++;
+                     *(bitmap_tmp++)=(UBYTE)(source>>4);
+                     *(bitmap_tmp++)=(UBYTE)(source&0x0f);
+                  }
                }
             }
             mpDisplayCurrent+=mDisplayPitch;

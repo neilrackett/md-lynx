@@ -151,15 +151,17 @@ enum
    MIKIE_PIXEL_FORMAT_16BPP_565_BE
 };
 
-// MD/Lynx: Mikey renders straight into the host's 320x200 chunked
-// framebuffer, doubling every pixel horizontally, so one Lynx scanline
-// occupies 320 host bytes and consecutive scanlines are two host rows
-// (640 bytes) apart. The intervening rows are filled by the front-end's
-// row-doubling pass. This is what saves the 16 KB intermediate buffer
-// the RP2040 has no room for.
-#define MDLYNX_DISPLAY_SCALE 2
-#define MDLYNX_DISPLAY_PITCH \
-   (HANDY_SCREEN_WIDTH * MDLYNX_DISPLAY_SCALE * MDLYNX_DISPLAY_SCALE)
+// MD/Lynx: Mikey renders straight into the host's 320-pixel-wide chunked
+// framebuffer rather than into an intermediate of its own, which is what
+// saves the 16 KB the RP2040 has no room for.
+//
+// At scale 2 every pixel is doubled horizontally, so a Lynx scanline
+// occupies 320 host bytes and consecutive scanlines sit two host rows
+// apart; the odd rows are filled during the chunky-to-planar pass. At
+// scale 1 a scanline is 160 bytes on consecutive rows, and the
+// front-end centres it. Either way the pitch is 320 * scale.
+#define MDLYNX_DISPLAY_WIDTH 320
+#define MDLYNX_DISPLAY_PITCH(scale) (MDLYNX_DISPLAY_WIDTH * (scale))
 
 class CMikie : public CLynxBase
 {
@@ -182,6 +184,16 @@ class CMikie : public CLynxBase
       void	ComLynxTxCallback(void (*function)(int data, ULONG2 objref), ULONG2 objref);
 
       void	BuildPalette(void);
+
+      // MD/Lynx: 1 or 2. Sets the horizontal pixel doubling in
+      // DisplayRenderLine and the row pitch together, so the two cannot
+      // disagree. Safe to call between frames; the front-end also has
+      // to move gPrimaryFrameBuffer to match.
+      void SetDisplayScale(UBYTE s)
+      {
+         mMDLynxScale = (s == 1) ? 1 : 2;
+         mDisplayPitch = MDLYNX_DISPLAY_PITCH(mMDLynxScale);
+      }
 
       // MD/Lynx: the ST shifter shows 16 colours from a 512 (STE: 4096)
       // entry space, which is exactly the Lynx's on-screen palette, so the
@@ -217,6 +229,7 @@ class CMikie : public CLynxBase
       // straight into the frame buffer and the ST palette registers carry
       // the colours, which is both exact and 8 KB cheaper on a 264 KB part.
       TPALETTE	mPalette[16];
+      UBYTE		mMDLynxScale;   // MD/Lynx: 1 or 2, see SetDisplayScale
 
 
       ULONG2		mIODAT;

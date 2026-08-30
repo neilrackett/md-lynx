@@ -277,6 +277,21 @@ static void publish_lynx_palette(void) {
  * border is never written again, and at 2x the odd rows are filled
  * during the planar conversion rather than here). Call after creating
  * CSystem and whenever the setting changes. */
+/* Fill the odd rows from the even ones, in chunky space.
+ *
+ * Only needed when something has been drawn at full vertical
+ * resolution over Mikey's output -- the menu panel or the timings
+ * readout. In the ordinary case the odd rows are filled far more
+ * cheaply during the chunky-to-planar pass (fb_publish_row_doubled),
+ * and this is skipped entirely. */
+static void __not_in_flash_func(double_rows)(void) {
+  uint8_t *row = fb_chunked_buffer;
+  for (int y = 0; y < FB_CHUNKED_H / 2; y++) {
+    memcpy(row + FB_CHUNKED_W, row, FB_CHUNKED_W);
+    row += 2 * FB_CHUNKED_W;
+  }
+}
+
 static void apply_scale(void) {
   if (s_lynx == NULL) return;
   s_lynx->mMikie->SetDisplayScale((UBYTE)s_scale);
@@ -1119,15 +1134,21 @@ void lynxemu_render_frame(void) {
 
   const uint32_t td0 = time_us_32();
   publish_lynx_palette();
-  if (s_menu_active || s_about_active) draw_overlay();
+
+  /* Anything drawn over Mikey's output is drawn at full vertical
+   * resolution, which the row-doubling publish path cannot carry: it
+   * converts only the even rows, so every odd row of a glyph would be
+   * dropped and the text would come out half-height. Fill the odd rows
+   * here and do the full transpose whenever an overlay is present. */
+  const bool full_res = overlay || s_show_perf;
+  if (overlay) draw_overlay();
   if (s_show_perf) draw_perf_overlay();
+
   const uint32_t td1 = time_us_32();
-  /* At 2x only the even rows hold fresh pixels, so the conversion
-   * duplicates each planar row instead of transposing the copy. At 1x
-   * every row is real. */
-  if (s_scale == 2) {
+  if (s_scale == 2 && !full_res) {
     fb_publish_row_doubled();
   } else {
+    if (s_scale == 2) double_rows();
     fb_publish();
   }
   account(emu_us, td1 - td0, time_us_32() - td1);

@@ -427,13 +427,23 @@ with EXIT heading the list and VOLUME immediately above the first cartridge,
 and it opens on that first cartridge with the settings scrolled above it. The
 cartridge currently in flash is drawn in the title colour.
 
-**Two geometries, one renderer.** With a cartridge running the menu is a
-26-column panel down the right-hand side, drawn over the frame the emulator
-just produced, with the game still running behind it (its controls are held so
-navigating doesn't also drive the game). With no cartridge loaded there is
-nothing to overlay onto, so it takes the whole screen and uses `MenuPalette`.
-`struct menu_style` carries the geometry and the pen numbers; `draw_menu()` and
-`draw_about()` each take one.
+**Always the same panel.** The menu is a 26-column column down the right-hand
+side whether or not a cartridge is running, so it never moves under the user.
+With a game loaded it is drawn over the frame the emulator just produced and
+the game keeps running behind it (its controls are held so navigating doesn't
+also drive the game); with nothing loaded the rest of the screen is simply
+cleared. Only the pens differ, which is all `menu_style_now()` decides;
+`draw_menu()` and `draw_about()` take a `struct menu_style`.
+
+**Draw order matters, and is easy to get wrong.** At 2x Mikey fills only the
+even rows, and anything drawn over it -- the panel, the timings readout -- is
+full vertical resolution. So the odd rows must be completed BEFORE the overlay
+is drawn: `double_rows()` then `draw_overlay()` then `fb_publish()`. Doubling
+afterwards overwrites every odd row of every glyph with a copy of the row above
+and halves the text (the symptom is letters collapsing into each other -- M
+reads as H, O as U, S as X). `fb_publish_row_doubled()` cannot carry an overlay
+at all, since it only ever converts the even rows, so the full transpose is
+used whenever something is drawn on top.
 
 The panel cannot bring its own colours — the shifter's sixteen belong to the
 cartridge. `choose_overlay_pens()` borrows two, picked as the closest pair in

@@ -610,27 +610,27 @@ struct menu_style {
   uint8_t dim;   /* settings rows and footers                */
 };
 
-static struct menu_style overlay_style(void) {
+/* The menu is always the same panel, whether or not a cartridge is
+ * running -- one geometry, so it never moves under you. Only the pens
+ * differ: over a running game it borrows two of the cartridge's, and
+ * with nothing loaded it has the whole palette to itself. */
+static struct menu_style menu_style_now(void) {
   struct menu_style st;
   st.col0 = OV_COL0;
   st.cols = OV_COLS;
-  st.bg = s_ov_bg;
-  st.text = s_ov_ink;
-  st.title = s_ov_ink;
-  st.hi = s_ov_ink;
-  st.dim = s_ov_ink;
-  return st;
-}
-
-static struct menu_style fullscreen_style(void) {
-  struct menu_style st;
-  st.col0 = 0;
-  st.cols = TEXT_COLS;
-  st.bg = PEN_BG;
-  st.text = PEN_TEXT;
-  st.title = PEN_TITLE;
-  st.hi = PEN_HILITE;
-  st.dim = PEN_DIM;
+  if (s_lynx != NULL) {
+    st.bg = s_ov_bg;
+    st.text = s_ov_ink;
+    st.title = s_ov_ink;
+    st.hi = s_ov_ink;
+    st.dim = s_ov_ink;
+  } else {
+    st.bg = PEN_BG;
+    st.text = PEN_TEXT;
+    st.title = PEN_TITLE;
+    st.hi = PEN_HILITE;
+    st.dim = PEN_DIM;
+  }
   return st;
 }
 
@@ -784,7 +784,7 @@ static void choose_overlay_pens(void) {
 
 /* Draw the menu or the About page as a panel over the running game. */
 static void draw_overlay(void) {
-  const struct menu_style st = overlay_style();
+  const struct menu_style st = menu_style_now();
   if (s_about_active) draw_about(st);
   else draw_menu(st);
 }
@@ -1098,9 +1098,9 @@ void lynxemu_render_frame(void) {
    * into the branch above -- a cartridge picked this frame drops
    * straight into play.) */
   if (s_lynx == NULL) {
-    const struct menu_style st = fullscreen_style();
-    if (s_about_active) draw_about(st);
-    else draw_menu(st);
+    /* Same panel, on an empty screen rather than over a game. */
+    fb_chunked_clear(PEN_BG);
+    draw_overlay();
     palette_set(MenuPalette);
     const uint32_t t1 = time_us_32();
     fb_publish();
@@ -1135,20 +1135,31 @@ void lynxemu_render_frame(void) {
   const uint32_t td0 = time_us_32();
   publish_lynx_palette();
 
-  /* Anything drawn over Mikey's output is drawn at full vertical
-   * resolution, which the row-doubling publish path cannot carry: it
-   * converts only the even rows, so every odd row of a glyph would be
-   * dropped and the text would come out half-height. Fill the odd rows
-   * here and do the full transpose whenever an overlay is present. */
+  /* Two renders, in this order, and the order is the whole point.
+   *
+   * Mikey has drawn the game into the even rows only. Anything on top
+   * of it -- the menu panel, the timings readout -- is drawn at full
+   * vertical resolution, so the odd rows have to be filled BEFORE that,
+   * not after: doubling afterwards would overwrite every odd row of
+   * every glyph with a copy of the row above and halve the text. And
+   * the row-doubling publish path can't carry an overlay at all, since
+   * it only ever converts the even rows.
+   *
+   * So: complete the game image, draw over it, then transpose the lot.
+   * The full transpose costs back the ~290 us the row-doubled path
+   * saves, but only while something is being drawn over the game --
+   * exactly when the frame budget doesn't matter. */
   const bool full_res = overlay || s_show_perf;
-  if (overlay) draw_overlay();
-  if (s_show_perf) draw_perf_overlay();
+  if (full_res) {
+    if (s_scale == 2) double_rows();   /* finish the game first */
+    if (overlay) draw_overlay();       /* then draw on top of it */
+    if (s_show_perf) draw_perf_overlay();
+  }
 
   const uint32_t td1 = time_us_32();
   if (s_scale == 2 && !full_res) {
     fb_publish_row_doubled();
   } else {
-    if (s_scale == 2) double_rows();
     fb_publish();
   }
   account(emu_us, td1 - td0, time_us_32() - td1);

@@ -1137,6 +1137,16 @@ void lynxemu_render_frame(void) {
     return;
   }
 
+  /* Anything drawn over Mikey's output covers ground Mikey does not
+   * repaint: at 1x it only paints the centred 160x102, so the border
+   * the panel covered would keep showing it. Clear on the trailing
+   * edge -- the emulator redraws its own area later this same frame,
+   * so nothing flickers. */
+  const bool full_res = overlay || s_show_perf;
+  static bool prev_full_res = false;
+  if (prev_full_res && !full_res) fb_chunked_clear(0);
+  prev_full_res = full_res;
+
   /* Play, or the menu overlaid on it. The game keeps running behind the
    * panel -- that is the point of an overlay -- but its controls are
    * held so navigating the menu doesn't also drive the game. */
@@ -1177,7 +1187,6 @@ void lynxemu_render_frame(void) {
    * The full transpose costs back the ~290 us the row-doubled path
    * saves, but only while something is being drawn over the game --
    * exactly when the frame budget doesn't matter. */
-  const bool full_res = overlay || s_show_perf;
   if (full_res) {
     if (s_scale == 2) double_rows();   /* finish the game first */
     if (overlay) draw_overlay();       /* then draw on top of it */

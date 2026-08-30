@@ -83,6 +83,9 @@ UFW_VBL_FLAG          equ $4C6               ; word: cleared by userfw_vbl, poll
 ; $77FD0; SCREEN_A's tail at $77D00 has 768 bytes available (shifter
 ; only reads 200*160 = 32000 B of each screen page, allocation is
 ; 32 KB), of which the first 500 are the STE DMA sound buffer.
+UFW_SND_LEN           equ $00077F00          ; word: current DMA buffer length in bytes
+UFW_SND_PREVPOS       equ $00077F02          ; word: DMA offset within its buffer, last VBL
+UFW_SND_TICK          equ $00077F04          ; byte: frame counter, steer on every 4th
 UFW_XPAD_HDR          equ $00077FD0          ; longword: Xpad block base, 0 = no provider
 UFW_XPAD_BUF0         equ $00077FD4          ; longword: address of pad 0 in buffer 0
 UFW_XPAD_BUF1         equ $00077FD8          ; longword: address of pad 0 in buffer 1
@@ -333,6 +336,7 @@ STE_DMA_END_LO        equ $FFFF8913
 STE_DMA_MODE          equ $FFFF8921          ; bit7 = mono, bits1-0 = rate
 STE_DMA_MODE_VAL      equ $82                ; mono + 25033 Hz (rate = 2)
 STE_DMA_CNT_MID       equ $FFFF890B          ; frame COUNTER mid byte (read-only)
+STE_DMA_CNT_LO        equ $FFFF890D          ; frame COUNTER low byte (read-only)
 ; Double buffer in the two screen-page tails. Loop-mode DMA plays one
 ; while .after_copy refills the OTHER, so the m68k write never crosses
 ; the DMA read pointer. Which buffer the DMA is in is read from bit 7
@@ -340,8 +344,36 @@ STE_DMA_CNT_MID       equ $FFFF890B          ; frame COUNTER mid byte (read-only
 ; bit7=1).
 STE_SND_BUF_A         equ $00077D00          ; page A tail
 STE_SND_BUF_B         equ $0007FD00          ; page B tail
-STE_SND_BYTES         equ 500                ; ~1 PAL VBL @ 25033 Hz (mult of 4)
-STE_SND_A_END         equ (STE_SND_BUF_A + STE_SND_BYTES)
+STE_SND_BUF_MASK      equ $7D00              ; low 16 bits of either base, bit 15 cleared
+
+; The DMA plays 25,033 samples a second off its own oscillator; the PAL
+; VBL is a different oscillator entirely. So the samples the chip eats
+; per frame is not 500, not an integer, and not the same on every
+; machine -- it is around 501.5. Handing it a fixed 500 every VBL means
+; it runs the buffer dry roughly every 350 frames and replays one, which
+; is the ~7-second crackle.
+;
+; So the length is not fixed. UFW_SND_LEN is steered each VBL by the
+; loop in .after_copy until the chip consumes exactly one buffer per
+; frame, whatever the true ratio is on this machine. Nothing here has to
+; know that ratio, and it cannot drift, because it is measured.
+;
+; This works only because the RP resamples one VBL of Lynx audio onto
+; however many samples it is asked for: changing the length changes the
+; resampling ratio by a fraction of a percent -- inaudible -- instead of
+; dropping or repeating a block of samples. The RP is told the current
+; length through SNDLEN_WINDOW_BASE below.
+;
+; The copy is a fixed STE_SND_COPY bytes so the longword loop stays
+; simple; anything past UFW_SND_LEN sits in the buffer unplayed, because
+; END is set from the length rather than the copy size.
+; END is a byte address, so the length itself need not be a multiple of
+; anything -- only the copy does, and that is fixed.
+STE_SND_COPY          equ 512                ; bytes copied per VBL (mult of 4)
+STE_SND_LEN_INIT      equ 500                ; starting guess, steered from here
+STE_SND_LEN_MIN       equ 480
+STE_SND_LEN_MAX       equ 512                ; must not exceed STE_SND_COPY
+STE_SND_A_END         equ (STE_SND_BUF_A + STE_SND_LEN_INIT)
 
 ; Cookie jar (_p_cookies) + _SND cookie for DMA-sound detection.
 COOKIE_JAR_PTR        equ $000005A0          ; longword: cookie jar base (0 = none)
@@ -352,6 +384,12 @@ COOKIE_SND            equ $5F534E44          ; '_SND'; value bit 1 = DMA/PCM sou
 ; produces the matching audio format. Distinct from IKBD ($FB8200)
 ; and VBLSYNC ($FB8400).
 SNDCAP_WINDOW_BASE    equ $FB8600
+
+; Buffer-length report: the m68k reads (SNDLEN_WINDOW_BASE + len -
+; STE_SND_LEN_MIN) once per VBL while STE DMA sound is running, so the
+; RP produces exactly the number of samples the chip is about to eat.
+; The bias keeps the whole range inside one byte.
+SNDLEN_WINDOW_BASE    equ $FB8C00
 
 ; --- Xpad: extended controller input ------------------------------
 ; Xpad (https://github.com/neilrackett/atarist-xpad) is an open standard
@@ -694,15 +732,18 @@ userfw:
     ; loop. The DMA free-runs; .after_copy refills whichever buffer the
     ; DMA isn't reading and points the loop at it. No Timer-B, no YM.
     lea     STE_SND_BUF_A, a0
-    move.w  #(STE_SND_BYTES/4)-1, d0
+    move.w  #(STE_SND_COPY/4)-1, d0
 .ste_snd_clr_a:
     clr.l   (a0)+
     dbf     d0, .ste_snd_clr_a
     lea     STE_SND_BUF_B, a0
-    move.w  #(STE_SND_BYTES/4)-1, d0
+    move.w  #(STE_SND_COPY/4)-1, d0
 .ste_snd_clr_b:
     clr.l   (a0)+
     dbf     d0, .ste_snd_clr_b
+    move.w  #STE_SND_LEN_INIT, UFW_SND_LEN
+    clr.w   UFW_SND_PREVPOS
+    clr.b   UFW_SND_TICK
     move.b  #STE_DMA_MODE_VAL, STE_DMA_MODE.w
     move.b  #((STE_SND_BUF_A>>16)&$FF), STE_DMA_START_HI.w
     move.b  #((STE_SND_BUF_A>>8)&$FF), STE_DMA_START_MID.w
@@ -878,30 +919,96 @@ userfw:
     ; A0 is free here on the DMA path (Timer-B isn't running) -- worth
     ; doing if the slack ever gets tight.
     tst.b   UFW_HAS_DMA
-    beq.s   .no_dma_refill
-    btst    #7, STE_DMA_CNT_MID.w
+    beq     .no_dma_refill
+
+    ; Where is the chip, and which buffer is it in? Both come out of one
+    ; pair of counter reads, so the length decision and the buffer
+    ; choice below can never disagree about what it is playing. Bit 15
+    ; of the address separates the two buffers ($x7D00 vs $xFD00), so
+    ; masking it off leaves the offset within whichever one it is in.
+    moveq   #0, d1
+    move.b  STE_DMA_CNT_MID.w, d1
+    move.w  d1, d3                       ; keep the raw mid byte
+    andi.w  #$7F, d1
+    lsl.w   #8, d1
+    move.b  STE_DMA_CNT_LO.w, d1
+    subi.w  #STE_SND_BUF_MASK, d1        ; d1 = offset into the current buffer
+    lsr.w   #7, d3
+    andi.w  #1, d3                       ; d3 = 0 in buffer A, 1 in buffer B
+
+    ; Steer the length from how the offset drifts. Sampled at the same
+    ; point in every frame, it sits still when the chip is eating
+    ; exactly one buffer per VBL; it creeps forward when the chip is
+    ; running fast (buffers too short) and backwards when it is slow.
+    ; Which way it moved is the whole signal -- the true ratio never has
+    ; to be known, only its sign.
+    ;
+    ; Correcting on every frame overshoots and hunts, so the offset is
+    ; sampled every frame but the length only moves on every fourth,
+    ; which leaves time for the previous nudge to show up. A handover
+    ; resets the offset and produces a large jump; those frames are
+    ; ignored rather than acted on.
+    addq.b  #1, UFW_SND_TICK
+    move.b  UFW_SND_TICK, d2
+    andi.b  #3, d2
+    bne.s   .snd_len_keep
+    move.w  d1, d2
+    sub.w   UFW_SND_PREVPOS, d2          ; d2 = drift since last frame
+    cmpi.w  #64, d2
+    bgt.s   .snd_len_keep                ; handover, not drift
+    cmpi.w  #-64, d2
+    blt.s   .snd_len_keep
+    tst.w   d2
+    beq.s   .snd_len_keep
+    bgt.s   .snd_len_inc
+    subq.w  #1, UFW_SND_LEN              ; chip falling behind: shorten
+    cmpi.w  #STE_SND_LEN_MIN, UFW_SND_LEN
+    bcc.s   .snd_len_keep
+    move.w  #STE_SND_LEN_MIN, UFW_SND_LEN
+    bra.s   .snd_len_keep
+.snd_len_inc:
+    addq.w  #1, UFW_SND_LEN              ; chip gaining: lengthen
+    cmpi.w  #STE_SND_LEN_MAX, UFW_SND_LEN
+    bls.s   .snd_len_keep
+    move.w  #STE_SND_LEN_MAX, UFW_SND_LEN
+.snd_len_keep:
+    move.w  d1, UFW_SND_PREVPOS
+
+    ; Tell the RP how many samples to produce next frame. Biased by the
+    ; minimum so the whole range fits a byte; it is no longer a multiple
+    ; of four, so it cannot be sent as a quarter.
+    move.w  UFW_SND_LEN, d1
+    subi.w  #STE_SND_LEN_MIN, d1
+    lea     SNDLEN_WINDOW_BASE, a1
+    tst.b   (a1, d1.w)
+
+    ; Refill the buffer the chip is NOT in, so the write never crosses
+    ; the read pointer, then point the loop at it.
+    tst.b   d3
     bne.s   .snd_use_a                   ; DMA in B -> refill A
     move.l  #STE_SND_BUF_B, d2           ; DMA in A -> refill B
     bra.s   .snd_have_buf
 .snd_use_a:
     move.l  #STE_SND_BUF_A, d2
 .snd_have_buf:
-    ; Copy one VBL of fresh signed PCM from the cart buffer into d2.
+    ; Fixed-size copy from the cart buffer; END below decides how much
+    ; of it is actually played.
     lea     AUDIO_BUFFER_ADDR, a1
     movea.l d2, a2
-    move.w  #(STE_SND_BYTES/4)-1, d1
+    move.w  #(STE_SND_COPY/4)-1, d1
 .ste_snd_copy:
     move.l  (a1)+, (a2)+
     dbf     d1, .ste_snd_copy
-    ; Point the DMA loop at the just-filled buffer: start = d2,
-    ; end = d2 + STE_SND_BYTES (each split hi/mid/lo).
+    ; start = d2, end = d2 + UFW_SND_LEN (each split hi/mid/lo).
     move.l  d2, d3
     move.b  d3, STE_DMA_START_LO.w
     lsr.l   #8, d3
     move.b  d3, STE_DMA_START_MID.w
     lsr.l   #8, d3
     move.b  d3, STE_DMA_START_HI.w
-    add.l   #STE_SND_BYTES, d2
+    moveq   #0, d1
+    move.w  UFW_SND_LEN, d1
+    add.l   d1, d2
     move.b  d2, STE_DMA_END_LO.w
     lsr.l   #8, d2
     move.b  d2, STE_DMA_END_MID.w

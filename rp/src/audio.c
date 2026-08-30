@@ -74,11 +74,43 @@ audio_mode_t audio_get_mode(void) { return s_audio_mode; }
  * keeps the window address and the bit-to-back-end mapping with the
  * module that owns audio_mode_t and the refill sizes. */
 #define AUDIO_SNDCAP_HIBYTE 0x8600u
-#define AUDIO_SNDCAP_HIMASK 0xFF00u
+#define AUDIO_WINDOW_HIMASK 0xFF00u
+
+/* Buffer-length report (SNDLEN_WINDOW_BASE in userfw.s): while STE DMA
+ * sound is running the m68k measures how much the chip actually eats
+ * per frame -- it is about 501.5, not 500, and it varies by machine
+ * because the DMA and the video run off different oscillators -- and
+ * sends the length back as bytes/4 once a VBL. Producing exactly that
+ * many is what stops the chip running a buffer dry and replaying it. */
+#define AUDIO_SNDLEN_HIBYTE 0x8C00u
+
+/* The report is biased by the m68k's minimum so it fits one byte; this
+ * must match STE_SND_LEN_MIN in userfw.s. */
+#define AUDIO_SNDLEN_BIAS 480u
+
+/* Guard rails on a value that arrives over a bus. The m68k steers
+ * within a narrow band around one VBL's worth, so anything well outside
+ * it is a corrupt sample rather than a length, and is ignored. */
+#define AUDIO_FILL_BYTES_MIN 448u
+#define AUDIO_FILL_BYTES_MAX 576u
+
+void audio_set_fill_bytes(uint32_t bytes) {
+  if (s_audio_mode != AUDIO_MODE_DMA) {
+    return; /* the YM rate is fixed by the Timer-B divider */
+  }
+  if (bytes < AUDIO_FILL_BYTES_MIN || bytes > AUDIO_FILL_BYTES_MAX ||
+      bytes > CART_AUDIO_BUFFER_SIZE) {
+    return;
+  }
+  s_fill_bytes = bytes;
+}
 
 void audio_consume_rom3_sample(uint16_t addr_lsb) {
-  if ((addr_lsb & AUDIO_SNDCAP_HIMASK) == AUDIO_SNDCAP_HIBYTE) {
+  const uint16_t window = addr_lsb & AUDIO_WINDOW_HIMASK;
+  if (window == AUDIO_SNDCAP_HIBYTE) {
     audio_set_mode((addr_lsb & 1u) ? AUDIO_MODE_DMA : AUDIO_MODE_YM);
+  } else if (window == AUDIO_SNDLEN_HIBYTE) {
+    audio_set_fill_bytes(AUDIO_SNDLEN_BIAS + (uint32_t)(addr_lsb & 0xFFu));
   }
 }
 

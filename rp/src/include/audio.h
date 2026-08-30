@@ -68,9 +68,17 @@ void audio_set_mode(audio_mode_t mode);
 /* Current back-end, for the fill callback to pick its output format. */
 audio_mode_t audio_get_mode(void);
 
+/* Set the per-VBL refill size. Only meaningful for STE DMA sound, where
+ * the m68k measures what the chip actually consumes per frame and sends
+ * it back -- that figure is near 501, not 500, and differs between
+ * machines because the sound DMA and the video are clocked separately.
+ * Ignored in YM mode, whose rate is fixed by the Timer-B divider, and
+ * for values outside the cart buffer. */
+void audio_set_fill_bytes(uint32_t bytes);
+
 /* commemul ring consumer. Passed each captured ROM3 sample by the
- * dispatcher in fb.c; filters for the m68k's sound-capability report
- * window and calls audio_set_mode with what it finds. */
+ * dispatcher in fb.c; filters for the m68k's sound-capability and
+ * buffer-length report windows and applies what it finds. */
 void audio_consume_rom3_sample(uint16_t addr_lsb);
 
 typedef void (*audio_fill_cb_t)(uint8_t *buf, uint32_t bytes);

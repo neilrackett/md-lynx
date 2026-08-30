@@ -229,13 +229,39 @@ beyond calling `audio_get_mode()`.
 Audio uses no Atari RAM in the YM path and only the two screen-page tails in
 the DMA path; the cart buffer at `$FA4100` is the whole I/O channel.
 
+**The STE buffer length is measured, not assumed.** The sound DMA runs off
+its own oscillator and the video off another, so the samples the chip eats per
+frame is not 500, not an integer, and not the same on every machine -- it is
+around 501.5. Handing it a fixed 500 ran a buffer dry roughly every 350 frames
+and replayed it: an audible crackle every ~7 seconds.
+
+`userfw.s` therefore steers the length. Each VBL it reads the DMA's offset
+within the buffer it is playing (frame-counter mid/low, with bit 15 masked off
+since that is what separates the two buffers). Sampled at the same point every
+frame that offset sits still when the chip is consuming exactly one buffer per
+VBL, creeps forward when the chip is running fast and backwards when it is
+slow. Only the *sign* is used, so the true ratio never has to be known.
+Corrections are ±1 byte applied on every fourth frame -- correcting every frame
+overshoots and hunts, and a deadband is worse; both were simulated against the
+real DMA timing before this was written. Frames where a handover reset the
+offset produce a large jump and are ignored.
+
+`END` is a byte address, so the length needs no alignment; only the copy does,
+and that is a fixed `STE_SND_COPY` (512) with anything past the length sitting
+in the buffer unplayed. The length is sent to the RP each VBL through
+`SNDLEN_WINDOW_BASE` (`$FB8C00`), biased by `STE_SND_LEN_MIN` so it fits a
+byte, and `audio_set_fill_bytes()` applies it.
+
+This only works because the RP resamples one VBL of Lynx audio onto whatever
+count it is asked for: changing the length shifts the resampling ratio by a
+fraction of a percent -- inaudible -- rather than dropping or repeating a block
+of samples. `AUDIO_SNDLEN_BIAS` in `audio.c` must match `STE_SND_LEN_MIN`.
+
 Tuning knobs:
 - `TIMERB_COUNT` in `userfw.s` sets the YM rate. It must stay in step with
   `AUDIO_FILL_BYTES_YM` in `rp/src/audio.c` (= 2 × fires-per-VBL), or the m68k
-  and the RP drift apart.
-- `STE_SND_BYTES` in `userfw.s` and `AUDIO_FILL_BYTES_DMA` in `audio.c` must
-  match (500 = one PAL VBL at 25,033 Hz, and a multiple of 4 for the copy
-  loop).
+  and the RP drift apart. The YM path is fixed-rate; only the STE path is
+  steered.
 
 ### Atari ST side (`target/atarist/`)
 - `src/main.s` — m68k cartridge header + boot dispatcher. Lives at `$FA0000` (ROM4 cartridge region). `pre_auto` (CA_INIT bit 27) runs in supervisor mode, copies `start_rom_code` below ST screen memory, jumps there, checks resolution (high-res falls to GEM with a warning), then **`jmp USERFW` directly** — no terminal command dispatch in the default path. The old `check_commands` / `rom_function` indirection is still defined (for apps that want CMD_START-style handoff from the RP) but unused.

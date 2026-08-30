@@ -69,23 +69,27 @@ extern const struct FB_FONT font8x8; /* defined in fb.c */
 #define TEXT_COLS (FB_CHUNKED_W / CELL_W)
 #define TEXT_ROWS (FB_CHUNKED_H / CELL_H)
 
-/* Menu palette indices. Index 0 also drives the ST border, so it is the
- * background rather than the text colour. */
+/* Menu palette indices. Index 0 also drives the ST border, so black
+ * takes it: the screen around the panel and the border beyond it are
+ * then the same, and the panel reads as a panel rather than as more
+ * background. The panel's own fill is a separate pen. */
 #define PEN_BG 0
 #define PEN_TEXT 1
 #define PEN_TITLE 2
 #define PEN_HILITE 3
 #define PEN_DIM 4
 #define PEN_WARN 5
+#define PEN_PANEL 6
 
 static const uint16_t MenuPalette[PALETTE_ENTRIES] = {
-    PALETTE_RGB(0, 0, 2), /*  0 navy      -- background + ST border */
+    PALETTE_RGB(0, 0, 0), /*  0 black     -- background + ST border */
     PALETTE_RGB(7, 7, 7), /*  1 white     -- body text              */
     PALETTE_RGB(2, 7, 7), /*  2 cyan      -- titles                 */
     PALETTE_RGB(7, 7, 0), /*  3 yellow    -- selection bar          */
     PALETTE_RGB(4, 4, 5), /*  4 grey      -- footer / dim text      */
     PALETTE_RGB(7, 3, 2), /*  5 red       -- warnings               */
-    PALETTE_RGB(0, 0, 4), PALETTE_RGB(0, 0, 0), PALETTE_RGB(0, 0, 0),
+    PALETTE_RGB(0, 0, 2), /*  6 navy      -- panel fill             */
+    PALETTE_RGB(0, 0, 0), PALETTE_RGB(0, 0, 0),
     PALETTE_RGB(0, 0, 0), PALETTE_RGB(0, 0, 0), PALETTE_RGB(0, 0, 0),
     PALETTE_RGB(0, 0, 0), PALETTE_RGB(0, 0, 0), PALETTE_RGB(0, 0, 0),
     PALETTE_RGB(0, 0, 0), /* 15 black                               */
@@ -646,7 +650,7 @@ static struct menu_style menu_style_now(void) {
     st.hi = s_ov_ink;
     st.dim = s_ov_ink;
   } else {
-    st.bg = PEN_BG;
+    st.bg = PEN_PANEL;
     st.text = PEN_TEXT;
     st.title = PEN_TITLE;
     st.hi = PEN_HILITE;
@@ -821,7 +825,7 @@ static void draw_overlay(void) {
 }
 
 static void draw_loading(const char *name) {
-  fb_chunked_clear(PEN_BG);
+  fb_chunked_clear(PEN_BG);   /* black, like the picker behind it */
   text_centred(11, PEN_TITLE, "LOADING");
   text_centred(13, PEN_TEXT, name);
   text_centred(15, PEN_DIM, "WRITING CARTRIDGE TO FLASH...");

@@ -88,10 +88,11 @@ class CRam : public CLynxBase
 
       ~CRam()
       {
-         if (mHomebrewData) {
-            delete[] mHomebrewData;
-            mHomebrewData=NULL;
-         }
+         // MD/Lynx: mHomebrewData is BORROWED -- the constructor's
+         // `new UBYTE[]` is commented out and it points straight at the
+         // caller's image (in flash, for this port). See ~CCart for the
+         // same fix and why upstream never sees it.
+         mHomebrewData=NULL;
       }
 
       void Reset(void)

@@ -211,10 +211,15 @@ CCart::CCart(UBYTE *gamedata, ULONG2 gamesize)
 CCart::~CCart()
 {
    TRACE_CART0("~CCart()");
-   if (mCartBank0) delete[] mCartBank0;
-   if (mCartBank1) delete[] mCartBank1;
-   if (mCartBank0A) delete[] mCartBank0A;
-   if (mCartBank1A) delete[] mCartBank1A;
+   // MD/Lynx: the bank pointers are BORROWED, not owned. The
+   // allocations above are commented out and the constructor assigns
+   // `gamedata` directly, which in this port is a pointer into the
+   // cartridge image in flash. Freeing that hands newlib a non-heap
+   // address, so it reads a chunk header out of flash and splices
+   // garbage into the free list -- the first cartridge then loads fine
+   // and the next one wedges. Upstream never trips over it because
+   // pico-lynx reboots the Pico to change cartridge rather than
+   // destroying CSystem, so these destructors never run there.
 }
 
 void CCart::Reset(void)

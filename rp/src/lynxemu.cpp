@@ -621,9 +621,22 @@ static void ui_select(void) {
  * carries pen numbers rather than the fixed PEN_* constants.
  * -------------------------------------------------------------------- */
 
-/* Panel is 26 columns of the 40, leaving 14 (112 px) of game visible. */
+/* The panel is inset from the top, right and bottom edges so a margin of
+ * game shows on every side of it rather than it butting up against
+ * three edges of the screen. The left edge is where it is because the
+ * panel is 25 columns wide, which leaves 14 columns (112 px) of game.
+ *
+ * The inset is one character cell, which keeps every row and column of
+ * the panel on the text grid: the panel then covers text rows
+ * MENU_TOP_ROW..MENU_BOT_ROW and columns OV_COL0..OV_COL0+OV_COLS-1,
+ * and everything inside is laid out in those terms. */
+#define MENU_INSET CELL_H /* 8 px of game above, right and below */
+
 #define OV_COL0 14
-#define OV_COLS (TEXT_COLS - OV_COL0)
+#define OV_COLS (TEXT_COLS - OV_COL0 - (MENU_INSET / CELL_W))
+
+#define MENU_TOP_ROW (MENU_INSET / CELL_H)
+#define MENU_BOT_ROW ((FB_CHUNKED_H - MENU_INSET) / CELL_H - 1)
 
 struct menu_style {
   int col0;      /* leftmost text column                     */
@@ -667,22 +680,26 @@ static void style_centred(const struct menu_style &st, int row, uint8_t pen,
   text_at(col, row, pen, s);
 }
 
-#define MENU_FIRST_ROW 3
-#define MENU_ROWS 20
+/* Inside the panel: a blank row, the header, a blank row, the list, then
+ * the two footer rows hard against the bottom. */
+#define MENU_TITLE_ROW (MENU_TOP_ROW + 1)
+#define MENU_FIRST_ROW (MENU_TOP_ROW + 3)
+#define MENU_ROWS (MENU_BOT_ROW - 1 - MENU_FIRST_ROW)
 
 /* Longest cartridge name that fits: one column of indent either side. */
 #define NAME_COLS(st) ((st).cols - 4)
 
 static void draw_menu(const struct menu_style &st) {
-  fb_fill_rect(st.col0 * CELL_W, 0, st.cols * CELL_W, FB_CHUNKED_H, st.bg);
+  fb_fill_rect(st.col0 * CELL_W, MENU_INSET, st.cols * CELL_W,
+               FB_CHUNKED_H - 2 * MENU_INSET, st.bg);
 
   /* Title and version share the top row, indented to the same columns
    * the list items use: rows start at col0 + 2 and run a NAME_COLS-wide
    * field, so the last text column is col0 + cols - 3. Both edges line
    * up with the entries below. */
-  text_at(st.col0 + 2, 1, st.title, "MD/LYNX");
-  text_at(st.col0 + st.cols - 2 - (int)strlen(RELEASE_VERSION), 1, st.dim,
-          RELEASE_VERSION);
+  text_at(st.col0 + 2, MENU_TITLE_ROW, st.title, "MD/LYNX");
+  text_at(st.col0 + st.cols - 2 - (int)strlen(RELEASE_VERSION),
+          MENU_TITLE_ROW, st.dim, RELEASE_VERSION);
 
   const int total = menu_rows_total();
   int first = sel_to_row(s_selected) - MENU_ROWS / 2;
@@ -724,8 +741,8 @@ static void draw_menu(const struct menu_style &st) {
     style_centred(st, MENU_FIRST_ROW + UI_ITEM_COUNT + 2, PEN_WARN, s_folder);
   }
 
-  style_centred(st, TEXT_ROWS - 2, st.dim, "CURSORS  RETURN");
-  style_centred(st, TEXT_ROWS - 1, st.dim, "ESC CLOSES");
+  style_centred(st, MENU_BOT_ROW - 1, st.dim, "CURSORS  RETURN");
+  style_centred(st, MENU_BOT_ROW, st.dim, "ESC CLOSES");
 }
 
 /* Append the rolling frame rate as "N.M". */
@@ -747,14 +764,15 @@ static void append_ms(char *buf, size_t cap, uint32_t us) {
 
 /* Kept inside 26 columns so the same text serves the overlay panel. */
 static void draw_about(const struct menu_style &st) {
-  fb_fill_rect(st.col0 * CELL_W, 0, st.cols * CELL_W, FB_CHUNKED_H, st.bg);
+  fb_fill_rect(st.col0 * CELL_W, MENU_INSET, st.cols * CELL_W,
+               FB_CHUNKED_H - 2 * MENU_INSET, st.bg);
 
   char hdr[TEXT_COLS + 1];
   hdr[0] = '\0';
   str_append(hdr, sizeof(hdr), "MD/LYNX ");
   str_append(hdr, sizeof(hdr), RELEASE_VERSION);
 
-  int y = 3;
+  int y = MENU_TITLE_ROW;
   style_centred(st, y++, st.title, hdr);
   y++;
   style_centred(st, y++, st.text, "ATARI LYNX EMULATOR");
@@ -789,7 +807,7 @@ static void draw_about(const struct menu_style &st) {
   append_ms(buf, sizeof(buf), s_perf_pub_us);
   style_centred(st, y++, st.dim, buf);
 
-  style_centred(st, TEXT_ROWS - 2, st.dim, "PRESS ANY KEY");
+  style_centred(st, MENU_BOT_ROW, st.dim, "PRESS ANY KEY");
 }
 
 /* Pens the overlay borrows: the closest pair in the cartridge's own

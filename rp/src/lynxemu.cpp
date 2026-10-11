@@ -76,18 +76,18 @@ extern const struct FB_FONT font8x8; /* defined in fb.c */
 #define PEN_BG 0
 #define PEN_TEXT 1
 #define PEN_TITLE 2
-#define PEN_HILITE 3
 #define PEN_DIM 4
-#define PEN_WARN 5
 #define PEN_PANEL 6
 
+/* The menu itself is two of these, navy and white (see menu_style);
+ * the rest serve the LOADING screen. */
 static const uint16_t MenuPalette[PALETTE_ENTRIES] = {
     PALETTE_RGB(0, 0, 0), /*  0 black     -- background + ST border */
     PALETTE_RGB(7, 7, 7), /*  1 white     -- body text              */
     PALETTE_RGB(2, 7, 7), /*  2 cyan      -- titles                 */
-    PALETTE_RGB(7, 7, 0), /*  3 yellow    -- selection bar          */
+    PALETTE_RGB(0, 0, 0), /*  3 unused                              */
     PALETTE_RGB(4, 4, 5), /*  4 grey      -- footer / dim text      */
-    PALETTE_RGB(7, 3, 2), /*  5 red       -- warnings               */
+    PALETTE_RGB(0, 0, 0), /*  5 unused                              */
     PALETTE_RGB(0, 0, 2), /*  6 navy      -- panel fill             */
     PALETTE_RGB(0, 0, 0), PALETTE_RGB(0, 0, 0),
     PALETTE_RGB(0, 0, 0), PALETTE_RGB(0, 0, 0), PALETTE_RGB(0, 0, 0),
@@ -665,32 +665,25 @@ static void ui_select(void) {
 #define MENU_TEXT_COLS ((MENU_TEXT_R - MENU_TEXT_X) / CELL_W)
 #define MENU_ROW_Y(i) (MENU_Y + MENU_PAD + (i) * CELL_H)
 
+/* Two pens, like MiSTer's OSD: everything is ink on the fill, and the
+ * strip and the selection bar are the fill on ink. */
 struct menu_style {
-  uint8_t bg;    /* box fill, and the ink on the strip and selection bar */
-  uint8_t text;  /* cartridge names                          */
-  uint8_t title; /* the strip                                */
-  uint8_t hi;    /* selection bar                            */
-  uint8_t dim;   /* settings rows and footers                */
+  uint8_t bg;  /* box fill, and the ink on the strip and selection bar */
+  uint8_t ink; /* text, the strip and the selection bar               */
 };
 
-/* The menu is always the same box, whether or not a cartridge is
- * running. Only the pens differ: over a running game it borrows two of
- * the cartridge's, and with nothing loaded it has the whole palette to
- * itself. */
+/* The menu is always the same box in the same two colours, navy and
+ * white, whether or not a cartridge is running. Only the pens differ:
+ * over a running game it borrows two of the cartridge's, and with
+ * nothing loaded it uses the menu palette's own. */
 static struct menu_style menu_style_now(void) {
   struct menu_style st;
   if (s_lynx != NULL) {
     st.bg = s_ov_bg;
-    st.text = s_ov_ink;
-    st.title = s_ov_ink;
-    st.hi = s_ov_ink;
-    st.dim = s_ov_ink;
+    st.ink = s_ov_ink;
   } else {
     st.bg = PEN_PANEL;
-    st.text = PEN_TEXT;
-    st.title = PEN_TITLE;
-    st.hi = PEN_HILITE;
-    st.dim = PEN_DIM;
+    st.ink = PEN_TEXT;
   }
   return st;
 }
@@ -717,7 +710,7 @@ static void draw_box(const struct menu_style &st, bool more_above,
   static const char title[] = "MD/LYNX";
   const int len = (int)(sizeof(title) - 1) * CELL_W;
 
-  fb_fill_rect(MENU_X, MENU_Y, MENU_STRIP_W, MENU_H, st.title);
+  fb_fill_rect(MENU_X, MENU_Y, MENU_STRIP_W, MENU_H, st.ink);
   fb_fill_rect(MENU_LIST_X, MENU_Y, MENU_LIST_W, MENU_H, st.bg);
   text_up(MENU_X + (MENU_STRIP_W - CELL_H) / 2,
           MENU_Y + (MENU_H + len) / 2 - 1, st.bg, title);
@@ -745,15 +738,11 @@ static void draw_menu(const struct menu_style &st) {
     const int item = row_to_sel(row_idx);
 
     /* The selected row is inverted right across the list, hard against
-     * the strip, as MiSTer draws it. The cartridge currently in flash
-     * otherwise reads back in the title colour, so ESC-ing out of a game
-     * shows at a glance what is running. */
-    uint8_t pen;
+     * the strip, as MiSTer draws it. */
+    uint8_t pen = st.ink;
     if (item == s_selected) {
-      fb_fill_rect(MENU_LIST_X, y, MENU_LIST_W, CELL_H, st.hi);
+      fb_fill_rect(MENU_LIST_X, y, MENU_LIST_W, CELL_H, st.ink);
       pen = st.bg;
-    } else {
-      pen = (item < 0) ? st.dim : (item == s_loaded ? st.title : st.text);
     }
 
     if (item >= 0) {
@@ -768,8 +757,8 @@ static void draw_menu(const struct menu_style &st) {
   }
 
   if (s_game_count == 0) {
-    menu_centred(UI_ITEM_COUNT + 1, PEN_WARN, "NO CARTRIDGES");
-    menu_centred(UI_ITEM_COUNT + 2, PEN_WARN, s_folder);
+    menu_centred(UI_ITEM_COUNT + 1, st.ink, "NO CARTRIDGES");
+    menu_centred(UI_ITEM_COUNT + 2, st.ink, s_folder);
   }
 }
 
@@ -800,14 +789,14 @@ static void draw_about(const struct menu_style &st) {
   str_append(hdr, sizeof(hdr), RELEASE_VERSION);
 
   int y = 0;
-  menu_centred(y++, st.title, hdr);
+  menu_centred(y++, st.ink, hdr);
   y++;
-  menu_centred(y++, st.text, "ATARI LYNX EMULATOR");
-  menu_centred(y++, st.text, "neilrackett.com");
+  menu_centred(y++, st.ink, "ATARI LYNX EMULATOR");
+  menu_centred(y++, st.ink, "neilrackett.com");
   y += 2;
-  menu_centred(y++, st.dim, "CORE: HANDY, ZLIB");
-  menu_centred(y++, st.dim, "(C) K. WILKINS");
-  menu_centred(y++, st.dim, "VIA XRIP/PICO-LYNX");
+  menu_centred(y++, st.ink, "CORE: HANDY, ZLIB");
+  menu_centred(y++, st.ink, "(C) K. WILKINS");
+  menu_centred(y++, st.ink, "VIA XRIP/PICO-LYNX");
   y++;
 
   char buf[TEXT_COLS + 1];
@@ -818,23 +807,23 @@ static void draw_about(const struct menu_style &st) {
     case AUDIO_MODE_YM: str_append(buf, sizeof(buf), "YM2149"); break;
     default: str_append(buf, sizeof(buf), "DETECTING"); break;
   }
-  menu_centred(y++, st.text, buf);
+  menu_centred(y++, st.ink, buf);
 
   buf[0] = '\0';
   str_append(buf, sizeof(buf), "EMU ");
   append_ms(buf, sizeof(buf), s_perf_emu_us);
   str_append(buf, sizeof(buf), " FPS ");
   append_fps(buf, sizeof(buf));
-  menu_centred(y++, st.dim, buf);
+  menu_centred(y++, st.ink, buf);
 
   buf[0] = '\0';
   str_append(buf, sizeof(buf), "DSP ");
   append_ms(buf, sizeof(buf), s_perf_disp_us);
   str_append(buf, sizeof(buf), " PUB ");
   append_ms(buf, sizeof(buf), s_perf_pub_us);
-  menu_centred(y++, st.dim, buf);
+  menu_centred(y++, st.ink, buf);
 
-  menu_centred(MENU_ROWS - 1, st.dim, "PRESS ANY KEY");
+  menu_centred(MENU_ROWS - 1, st.ink, "PRESS ANY KEY");
 }
 
 /* Pens the overlay borrows: the closest pair in the cartridge's own

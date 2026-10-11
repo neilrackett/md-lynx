@@ -467,8 +467,7 @@ goes back to the game. It is one flat list with the settings block on top and
 the cartridges below, the same layout as MD/Speccy: `sel_to_row()` is a plain
 `+ UI_ITEM_COUNT` offset, so the settings land in reverse declaration order
 with EXIT heading the list and VOLUME immediately above the first cartridge,
-and it opens on that first cartridge with the settings scrolled above it. The
-cartridge currently in flash is drawn in the title colour.
+and it opens on that first cartridge with the settings scrolled above it.
 
 **Always the same box.** The menu is laid out like a MiSTer OSD: a box 30
 cells wide and 16 rows tall, centred on the screen, with a two-cell strip down
@@ -481,9 +480,11 @@ their name on the left and their value right-aligned (`settings_label()` /
 never moves under the user. With a game loaded it is drawn over the frame the
 emulator just produced and the game keeps running around it (its controls are
 held so navigating doesn't also drive the game); with nothing loaded the rest
-of the screen is simply cleared. Only the pens differ, which is all
-`menu_style_now()` decides; `draw_menu()` and `draw_about()` take a
-`struct menu_style`.
+of the screen is simply cleared. It is two colours either way, navy and
+white, like MiSTer's: everything is ink on the fill, and the strip and the
+selection bar are the fill on ink. Only the pens differ -- two borrowed from
+the cartridge, or the menu palette's own -- which is all `menu_style_now()`
+decides; `draw_menu()` and `draw_about()` take a `struct menu_style`.
 
 **Draw order matters, and is easy to get wrong.** At 2x Mikey fills only the
 even rows, and anything drawn over it -- the panel, the timings readout -- is

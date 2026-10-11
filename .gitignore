@@ -67,6 +67,9 @@ __pycache__/
 /uuid.txt
 .DS_Store
 
+# The emulated SD card (EmuMD): cartridge images are game data
+/emu/sd/
+
 # Staged from the xpad submodule by target/atarist/build.sh: only
 # ST_WORKING_FOLDER is mounted into the toolkit container, so the ST
 # build needs its own copy of the ABI equates inside this folder.

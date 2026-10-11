@@ -165,6 +165,10 @@ You usually can't flash. What you can do offline: build (that catches the
 RAM ceiling, which is the failure that actually bites here), read the
 `.map` for the heap window, and validate addressing / fixed-point maths by
 mirroring the exact code in a small script and diffing it against a
-reference. Then the user flashes and confirms. In-game, the menu's
+reference. The whole app also runs in Hatari on the host with EmuMD
+(`mdfw.ini`, `emu/`; AGENTS.md's "EmuMD" section): headless runs give
+screenshots and the debug log, and a command fifo can drive the menu.
+Timing, the RAM ceiling and races still need the ST. Then the user
+flashes and confirms. In-game, the menu's
 **TIMINGS** setting and the **ABOUT** page report per-frame emulation cost,
 frame rate and the detected audio back-end.

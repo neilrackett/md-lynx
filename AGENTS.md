@@ -111,7 +111,24 @@ Build flow (orchestrated by `build.sh`):
 - `upload_s3.sh <file>` is a manual one-off uploader; needs `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
 
 ### Tests
-There is no test suite. "Verification" is: build succeeds, UF2 boots on hardware, and a cartridge from the SD folder runs — plus manual interaction over the serial debug console. The menu's **TIMINGS** setting overlays the per-frame emulation cost and the achieved frame rate, and the **ABOUT** page shows the same figures along with which audio back-end the m68k detected; both are the quickest way to tell whether a change helped or hurt.
+There is no test suite. "Verification" is: build succeeds, UF2 boots on hardware, and a cartridge from the SD folder runs — plus manual interaction over the serial debug console. The menu's **TIMINGS** setting overlays the per-frame emulation cost and the achieved frame rate, and the **ABOUT** page shows the same figures along with which audio back-end the m68k detected; both are the quickest way to tell whether a change helped or hurt. Before any of that, the EmuMD build (next section) runs MD/Lynx in Hatari on the host.
+
+### EmuMD: MD/Lynx in Hatari, on the host
+[EmuMD](https://github.com/neilrackett/emumd) (the `emu/emumd` submodule; its skill is `emu/emumd/skills/emumd/SKILL.md`) builds the firmware's C and C++, the Handy core included, for the host as `build/md-lynx.mdfw` and runs it in a patched Hatari, with the real m68k cartridge (`target_firmware.h`, so whatever the last hardware build made) on the cartridge port and `emu/sd` as the microSD card (cartridges in `emu/sd/lynx`, gitignored). `make emu TOS=...` runs it in a window. For a check without one:
+
+```bash
+emu/emumd/tools/mdfw run --headless --frames 2600 --no-user-config \
+    --screenshot build/menu.png --log build/run.log -V --timeout 300
+```
+
+`-V` shows `DPRINTF`. Hatari's `-- --cmd-fifo FILE` takes `hatari-event keypress 28` to drive the menu from a script (Return; give ESC as `0x01`, since a single character is typed as that character, not read as a scancode). Send commands early in a long run: in short headless runs, late ones were seen not to arrive.
+
+How it is put together (`mdfw.ini`, `emu/`):
+- `template = sidecartridge`: MD/Lynx's own `main()` runs, and EmuMD stands in for `romemul.c`, `commemul.c`, `select.c`, `hw_config.c`, `sdcard.c` and the Booster's first run (this app as `BOOT_FEATURE`, a lookup entry for sector 0), since the emulated flash starts empty. The version comes from `version.txt`; the UUID is `rp/src/CMakeLists.txt`'s default.
+- `fb_chunked.c` is replaced by `emu/fb_chunked.c`: its jobs and arguments are 64-bit pointers on the host and cannot go through the 32-bit FIFO, so they wait in a slot with the FIFO as the doorbell; parking Core 1 is a no-op, and the transposes run on one core. The Thumb workers in `fb_chunked_asm.S` and `fb_blit_asm.S` are C in `emu/`.
+- `emu/shim/` wraps `constants.h` (ROM_TEMP where `memmap_rp.ld` puts it, at 0xA0000 for 512 KB, rather than EmuMD's 0x100000, and `rom_temp_size()` without its absolute linker symbol), `debug.h` (adds `DPRINT_HEAP`) and `cart_shared.h` (`__cart_app_free` buffers become ordinary variables). **The headers in `rp/src/include` include their neighbours in quotes, which finds the neighbour in the same folder before any stand-in**, so `emu/shim/mdlynx_emu.h` is force-included first (`cflags`) to set the stand-ins' include guards; a new stand-in for a header in that folder has to go in there too.
+- Firmware changes for it, both no-ops on the RP2040: `fb.c` does the cart framebuffer's address arithmetic in `uintptr_t`, and the `.cart_app_free` linker check in `emul.c` sits behind `#if !EMUMD`.
+- What it cannot tell you: anything about time (the host is far faster, and the TIMINGS and ABOUT figures are in emulated time), memory (the RP2040's RAM ceiling is not modelled), or races between the cores. EmuMD keeps the firmware's variables across a reboot (an ST reset) where the RP2040 starts afresh, so a bug that only shows after a reboot may not reproduce.
 
 ## Architecture
 
@@ -553,7 +570,7 @@ when the cartridge is swapped out.
 ## Editing guardrails
 
 - **`rp/src/lynx/` is vendored upstream code** (Handy, zlib licence). Change it only when the port genuinely requires it, keep the licence text, keep the `ALTERED SOURCE VERSION` banner at the top of every file you touch, and tag each change with an `MD/Lynx:` comment explaining why — that banner is what zlib clause 2 requires of an altered redistribution.
-- **Never modify** `pico-sdk/`, `pico-extras/`, or `fatfs-sdk/` — they are git submodules pinned to specific upstream revisions, and the build re-pins them on every run. To change FatFs configuration, edit `rp/src/ff/ffconf.h` (project-owned override); the include path is set up so this file wins over the submodule's default.
+- **Never modify** `pico-sdk/`, `pico-extras/`, `fatfs-sdk/` or `emu/emumd/` — they are git submodules pinned to specific upstream revisions, and the build re-pins the first three on every run. To change FatFs configuration, edit `rp/src/ff/ffconf.h` (project-owned override); the include path is set up so this file wins over the submodule's default. For EmuMD, change it upstream and update the submodule.
 - Don't touch `main.c` for feature work — start in `emul.c`, or `lynxemu.cpp` for anything the emulator front-end owns.
 - Match the existing C style (clang-format config in `.clang-format`, clang-tidy in `.clang-tidy` — both wired up via CMake when the binaries are on `PATH`).
 

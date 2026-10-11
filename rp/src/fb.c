@@ -1,4 +1,7 @@
-/**
+/*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * File: fb.c
  * Description: Framebuffer module — owns `fb_screen` and brings up the
  *              single 32 KB cartridge framebuffer the m68k reads each
@@ -69,7 +72,7 @@ int fb_init(const struct FB_MODE *mode) {
     return -1;
   }
   fb_screen.framebuffer =
-      (unsigned int *)((unsigned int)&__rom_in_ram_start__ +
+      (unsigned int *)((uintptr_t)&__rom_in_ram_start__ +
                        CART_FRAMEBUFFER_OFFSET);
   fb_screen.width = mode->h_pixels;
   fb_screen.height = mode->v_pixels;

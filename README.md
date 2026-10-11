@@ -115,6 +115,18 @@ make uart
 
 RAM is the binding constraint here — the emulated Lynx's own 64K has to share the RP2040's 192K with the framebuffer path — so check the `__bss_end__` .. `__StackLimit` window in `rp/build-*/rp.elf.map` after anything that adds state. `AGENTS.md` has the full architecture notes.
 
+### Running it on your computer
+
+You can also run MD/Lynx on your Mac or Linux PC, no SidecarT required, using [EmuMD](https://github.com/neilrackett/emumd) in the `emu/emumd` submodule. It builds the firmware for your computer and runs it in a version of [Hatari](https://www.hatari-emu.org) with a Multi-device on its cartridge port, with a folder standing in for the microSD card. You'll need the tools in [EmuMD's README](https://github.com/neilrackett/emumd#getting-started), and your cartridge images in `emu/sd/lynx`, then:
+
+```bash
+emu/emumd/tools/mdfw hatari            # once: builds EmuMD's Hatari, downloads EmuTOS
+make emu                               # builds and runs MD/Lynx in Hatari
+make emu RECORD=lynx.avi               # records picture and sound until you quit
+```
+
+EmuMD boots EmuTOS unless you give it another TOS image with `TOS=/path/to/tos.img`. Add `-V` to `emu/emumd/tools/mdfw run` to see the firmware's debug output. It's great for testing the menu, the cartridge loader and the code that talks to the ST, but the emulated Multi-device has all the speed and memory it wants, so frame rate, timing and running out of RAM still need real hardware.
+
 For more on coding for the SidecarT, [the docs are here](https://docs.sidecartridge.com/sidecartridge-multidevice/programming/).
 
 ## License

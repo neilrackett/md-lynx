@@ -68,7 +68,9 @@ void emul_start() {
   // hole. The linker script hard-codes that window (ld cannot read C
   // headers), so verify it here against cart_shared.h's authoritative
   // offsets -- a drifted script would let the ST-visible layout and the
-  // parked buffers collide.
+  // parked buffers collide. (EmuMD builds have no linker script: there
+  // they are ordinary variables.)
+#if !EMUMD
   {
     extern char __cart_app_free_start__[], __cart_app_free_end__[];
     const char *base = (const char *)&__rom_in_ram_start__;
@@ -77,6 +79,7 @@ void emul_start() {
       panic(".cart_app_free outside the shared-region hole");
     }
   }
+#endif
 
   // RP2040 RAM is undefined at power-on and firmware.py only emits the
   // bytes up to the last non-zero in BOOT.BIN, so zero the whole 64 KB

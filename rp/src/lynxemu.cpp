@@ -223,13 +223,39 @@ static void str_append(char *dst, size_t cap, const char *src) {
   dst[n] = '\0';
 }
 
-static void text_at(int col, int row, uint8_t pen, const char *s) {
+/* Text at a pixel position; `x` is the left edge, the centre or the
+ * right edge according to `align`. */
+static void text_px(int x, int y, uint8_t pen, const char *s,
+                    enum FONT_ALIGNMENT align = FONT_ALIGN_LEFT) {
   font_set_font(&font8x8);
   font_set_color(pen);
   font_set_border(0, 0);
-  font_align(FONT_ALIGN_LEFT);
-  font_move((unsigned)(col * CELL_W), (unsigned)(row * CELL_H));
+  font_align(align);
+  font_move((unsigned)x, (unsigned)y);
   font_print(s);
+}
+
+static void text_at(int col, int row, uint8_t pen, const char *s) {
+  text_px(col * CELL_W, row * CELL_H, pen, s);
+}
+
+/* Text turned a quarter-turn anticlockwise, reading upwards from
+ * `y_bottom`, the way MiSTer labels its OSD strip. Each glyph row
+ * becomes a column, the top of the glyph facing left. */
+static void text_up(int x, int y_bottom, uint8_t pen, const char *s) {
+  const struct FB_FONT *f = &font8x8;
+  for (; *s; s++, y_bottom -= f->w) {
+    const int ch = (unsigned char)*s - f->first_char;
+    if (ch < 0 || ch >= f->num_chars) continue;
+    const unsigned char *glyph = &f->data[ch * f->h];
+    for (int gy = 0; gy < f->h; gy++) {
+      for (int gx = 0; gx < f->w; gx++) {
+        if (glyph[gy] & (1u << gx)) {
+          fb_chunked_buffer[(y_bottom - gx) * FB_CHUNKED_W + x + gy] = pen;
+        }
+      }
+    }
+  }
 }
 
 /* Centred text. The renderer already centres to the pixel under
@@ -510,30 +536,30 @@ static const char *ScaleNames[2] = {"1X CENTRED", "2X FULL"};
 static const char *OnOffNames[2] = {"OFF", "ON"};
 
 /* Menu items live ABOVE the games in the same list: index >= 0 is a
- * cartridge, index -1 .. -UI_ITEM_COUNT are the settings rows. */
-static void settings_label(int item, char *buf, size_t cap) {
-  char digits[12];
-  buf[0] = '\0';
+ * cartridge, index -1 .. -UI_ITEM_COUNT are the settings rows. Each
+ * reads the way MiSTer's do, its name on the left and its value, if it
+ * has one, right-aligned against the far edge. */
+static const char *settings_label(int item) {
   switch (item) {
-    case UI_ITEM_VOLUME:
-      str_append(buf, cap, "VOLUME: ");
-      str_append(buf, cap, fmt_uint(s_volume, digits, sizeof(digits)));
-      break;
-    case UI_ITEM_SCALE:
-      str_append(buf, cap, "SIZE: ");
-      str_append(buf, cap, ScaleNames[s_scale == 2u ? 1 : 0]);
-      break;
-    case UI_ITEM_SPEED:
-      str_append(buf, cap, "SPEED: ");
-      str_append(buf, cap, SpeedNames[s_full_speed ? 1 : 0]);
-      break;
-    case UI_ITEM_PERF:
-      str_append(buf, cap, "TIMINGS: ");
-      str_append(buf, cap, OnOffNames[s_show_perf ? 1 : 0]);
-      break;
-    case UI_ITEM_ABOUT: str_append(buf, cap, "ABOUT"); break;
-    case UI_ITEM_EXIT: str_append(buf, cap, "EXIT TO GEM"); break;
-    default: break;
+    case UI_ITEM_VOLUME: return "VOLUME";
+    case UI_ITEM_SCALE: return "SIZE";
+    case UI_ITEM_SPEED: return "SPEED";
+    case UI_ITEM_PERF: return "TIMINGS";
+    case UI_ITEM_ABOUT: return "ABOUT";
+    case UI_ITEM_EXIT: return "EXIT TO GEM";
+    default: return "";
+  }
+}
+
+/* `digits` is scratch for a value that has to be formatted. */
+static const char *settings_value(int item, char *digits, size_t cap) {
+  switch (item) {
+    case UI_ITEM_VOLUME: return fmt_uint(s_volume, digits, cap);
+    case UI_ITEM_SCALE: return ScaleNames[s_scale == 2u ? 1 : 0];
+    case UI_ITEM_SPEED: return SpeedNames[s_full_speed ? 1 : 0];
+    case UI_ITEM_PERF: return OnOffNames[s_show_perf ? 1 : 0];
+    case UI_ITEM_ABOUT: return RELEASE_VERSION;
+    default: return "";
   }
 }
 
@@ -607,55 +633,52 @@ static void ui_select(void) {
 }
 
 /* ---------------------------------------------------------------------
- * The menu is drawn two ways from one renderer.
+ * The menu is a MiSTer-style OSD: a box centred on the screen, a strip
+ * down its left edge carrying the title in inverse, reading upwards,
+ * and the list beside it. It is the same box whether or not a cartridge
+ * is running, so it never moves under you: over a game it sits on the
+ * frame the emulator just produced with the picture showing all round
+ * it, and with nothing loaded the rest of the screen is simply black.
  *
- * With a cartridge running it is a panel down the right-hand side, the
- * game still playing beside and behind it -- MD/Speccy's arrangement,
- * wider because there is more screen here. With no cartridge loaded
- * there is nothing to overlay, so it takes the whole screen and its own
- * palette.
- *
- * The panel case cannot bring its own colours: the shifter palette
+ * Over a game it cannot bring its own colours: the shifter palette
  * belongs to the running cartridge. It borrows two of the cartridge's
  * sixteen pens instead (see choose_overlay_pens), which is why a style
  * carries pen numbers rather than the fixed PEN_* constants.
  * -------------------------------------------------------------------- */
 
-/* The panel is inset from the top, right and bottom edges so a margin of
- * game shows on every side of it rather than it butting up against
- * three edges of the screen. The left edge is where it is because the
- * panel is 25 columns wide, which leaves 14 columns (112 px) of game.
- *
- * The inset is one character cell, which keeps every row and column of
- * the panel on the text grid: the panel then covers text rows
- * MENU_TOP_ROW..MENU_BOT_ROW and columns OV_COL0..OV_COL0+OV_COLS-1,
- * and everything inside is laid out in those terms. */
-#define MENU_INSET CELL_H /* 8 px of game above, right and below */
+/* MENU_ROWS rows of text, inset MENU_PAD from the top and bottom of the
+ * box. The box is 30 cells wide: the strip takes two of them and the
+ * list's text keeps one cell clear at either end, which leaves
+ * MENU_TEXT_COLS for a cartridge name. */
+#define MENU_ROWS 16
+#define MENU_PAD 4
+#define MENU_W (30 * CELL_W)
+#define MENU_H (MENU_ROWS * CELL_H + 2 * MENU_PAD)
+#define MENU_X ((FB_CHUNKED_W - MENU_W) / 2)
+#define MENU_Y ((FB_CHUNKED_H - MENU_H) / 2)
 
-#define OV_COL0 14
-#define OV_COLS (TEXT_COLS - OV_COL0 - (MENU_INSET / CELL_W))
-
-#define MENU_TOP_ROW (MENU_INSET / CELL_H)
-#define MENU_BOT_ROW ((FB_CHUNKED_H - MENU_INSET) / CELL_H - 1)
+#define MENU_STRIP_W (2 * CELL_W)
+#define MENU_LIST_X (MENU_X + MENU_STRIP_W)
+#define MENU_LIST_W (MENU_W - MENU_STRIP_W)
+#define MENU_TEXT_X (MENU_LIST_X + CELL_W)     /* left-aligned text  */
+#define MENU_TEXT_R (MENU_X + MENU_W - CELL_W) /* right-aligned text */
+#define MENU_TEXT_COLS ((MENU_TEXT_R - MENU_TEXT_X) / CELL_W)
+#define MENU_ROW_Y(i) (MENU_Y + MENU_PAD + (i) * CELL_H)
 
 struct menu_style {
-  int col0;      /* leftmost text column                     */
-  int cols;      /* width in columns                         */
-  uint8_t bg;    /* panel fill, and the ink of a selected row */
+  uint8_t bg;    /* box fill, and the ink on the strip and selection bar */
   uint8_t text;  /* cartridge names                          */
-  uint8_t title; /* headings                                 */
+  uint8_t title; /* the strip                                */
   uint8_t hi;    /* selection bar                            */
   uint8_t dim;   /* settings rows and footers                */
 };
 
-/* The menu is always the same panel, whether or not a cartridge is
- * running -- one geometry, so it never moves under you. Only the pens
- * differ: over a running game it borrows two of the cartridge's, and
- * with nothing loaded it has the whole palette to itself. */
+/* The menu is always the same box, whether or not a cartridge is
+ * running. Only the pens differ: over a running game it borrows two of
+ * the cartridge's, and with nothing loaded it has the whole palette to
+ * itself. */
 static struct menu_style menu_style_now(void) {
   struct menu_style st;
-  st.col0 = OV_COL0;
-  st.cols = OV_COLS;
   if (s_lynx != NULL) {
     st.bg = s_ov_bg;
     st.text = s_ov_ink;
@@ -672,77 +695,82 @@ static struct menu_style menu_style_now(void) {
   return st;
 }
 
-/* Centre `s` within the style's column span. */
-static void style_centred(const struct menu_style &st, int row, uint8_t pen,
-                          const char *s) {
-  int col = st.col0 + (st.cols - (int)strlen(s)) / 2;
-  if (col < st.col0) col = st.col0;
-  text_at(col, row, pen, s);
+/* Centre `s` across the list. */
+static void menu_centred(int row, uint8_t pen, const char *s) {
+  text_px(MENU_LIST_X + MENU_LIST_W / 2, MENU_ROW_Y(row), pen, s,
+          FONT_ALIGN_CENTER);
 }
 
-/* Inside the panel: a blank row, the header, a blank row, the list, then
- * the two footer rows hard against the bottom. */
-#define MENU_TITLE_ROW (MENU_TOP_ROW + 1)
-#define MENU_FIRST_ROW (MENU_TOP_ROW + 3)
-#define MENU_ROWS (MENU_BOT_ROW - 1 - MENU_FIRST_ROW)
+/* A small solid triangle centred on `cx`, its first row at `y`: the
+ * strip's hint that the list carries on that way. */
+static void draw_arrow(int cx, int y, bool down, uint8_t pen) {
+  for (int i = 0; i < 4; i++) {
+    const int half = down ? 3 - i : i;
+    fb_fill_rect(cx - half, y + i, 2 * half + 1, 1, pen);
+  }
+}
 
-/* Longest cartridge name that fits: one column of indent either side. */
-#define NAME_COLS(st) ((st).cols - 4)
+/* The box and its strip, with an arrow on the strip wherever the list
+ * runs on above or below what is shown. */
+static void draw_box(const struct menu_style &st, bool more_above,
+                     bool more_below) {
+  static const char title[] = "MD/LYNX";
+  const int len = (int)(sizeof(title) - 1) * CELL_W;
+
+  fb_fill_rect(MENU_X, MENU_Y, MENU_STRIP_W, MENU_H, st.title);
+  fb_fill_rect(MENU_LIST_X, MENU_Y, MENU_LIST_W, MENU_H, st.bg);
+  text_up(MENU_X + (MENU_STRIP_W - CELL_H) / 2,
+          MENU_Y + (MENU_H + len) / 2 - 1, st.bg, title);
+
+  const int cx = MENU_X + MENU_STRIP_W / 2;
+  if (more_above) draw_arrow(cx, MENU_Y + MENU_PAD, false, st.bg);
+  if (more_below) draw_arrow(cx, MENU_Y + MENU_H - MENU_PAD - 4, true, st.bg);
+}
 
 static void draw_menu(const struct menu_style &st) {
-  fb_fill_rect(st.col0 * CELL_W, MENU_INSET, st.cols * CELL_W,
-               FB_CHUNKED_H - 2 * MENU_INSET, st.bg);
-
-  /* Title and version share the top row, indented to the same columns
-   * the list items use: rows start at col0 + 2 and run a NAME_COLS-wide
-   * field, so the last text column is col0 + cols - 3. Both edges line
-   * up with the entries below. */
-  text_at(st.col0 + 2, MENU_TITLE_ROW, st.title, "MD/LYNX");
-  text_at(st.col0 + st.cols - 2 - (int)strlen(RELEASE_VERSION),
-          MENU_TITLE_ROW, st.dim, RELEASE_VERSION);
-
   const int total = menu_rows_total();
   int first = sel_to_row(s_selected) - MENU_ROWS / 2;
   if (first > total - MENU_ROWS) first = total - MENU_ROWS;
   if (first < 0) first = 0;
 
+  draw_box(st, first > 0, first + MENU_ROWS < total);
+
   char line[TEXT_COLS + 1];
+  char digits[12];
   for (int i = 0; i < MENU_ROWS; i++) {
     const int row_idx = first + i;
     if (row_idx >= total) break;
-    const int y = MENU_FIRST_ROW + i;
     if (row_is_gap(row_idx)) continue;   /* separator: nothing to draw */
+    const int y = MENU_ROW_Y(i);
     const int item = row_to_sel(row_idx);
-    const bool is_game = (item >= 0);
-    const bool sel = (item == s_selected);
 
-    if (is_game) {
-      display_name(&s_games[item], line, sizeof(line), NAME_COLS(st));
+    /* The selected row is inverted right across the list, hard against
+     * the strip, as MiSTer draws it. The cartridge currently in flash
+     * otherwise reads back in the title colour, so ESC-ing out of a game
+     * shows at a glance what is running. */
+    uint8_t pen;
+    if (item == s_selected) {
+      fb_fill_rect(MENU_LIST_X, y, MENU_LIST_W, CELL_H, st.hi);
+      pen = st.bg;
     } else {
-      settings_label(-item - 1, line, sizeof(line));
+      pen = (item < 0) ? st.dim : (item == s_loaded ? st.title : st.text);
     }
 
-    if (sel) {
-      fb_fill_rect((st.col0 + 1) * CELL_W, y * CELL_H,
-                   (st.cols - 2) * CELL_W, CELL_H, st.hi);
-      text_at(st.col0 + 2, y, st.bg, line);
+    if (item >= 0) {
+      display_name(&s_games[item], line, sizeof(line), MENU_TEXT_COLS);
+      text_px(MENU_TEXT_X, y, pen, line);
     } else {
-      /* The cartridge currently in flash reads back in the title colour
-       * so ESC-ing out of a game shows at a glance what is running. */
-      const uint8_t pen =
-          !is_game ? st.dim : (item == s_loaded ? st.title : st.text);
-      text_at(st.col0 + 2, y, pen, line);
+      text_px(MENU_TEXT_X, y, pen, settings_label(-item - 1));
+      text_px(MENU_TEXT_R, y, pen,
+              settings_value(-item - 1, digits, sizeof(digits)),
+              FONT_ALIGN_RIGHT);
     }
   }
 
   if (s_game_count == 0) {
-    style_centred(st, MENU_FIRST_ROW + UI_ITEM_COUNT + 1, PEN_WARN,
-                  "NO CARTRIDGES");
-    style_centred(st, MENU_FIRST_ROW + UI_ITEM_COUNT + 2, PEN_WARN, s_folder);
+    menu_centred(UI_ITEM_COUNT + 1, PEN_WARN, "NO CARTRIDGES");
+    menu_centred(UI_ITEM_COUNT + 2, PEN_WARN, s_folder);
   }
-
-  style_centred(st, MENU_BOT_ROW - 1, st.dim, "CURSORS  RETURN");
-  style_centred(st, MENU_BOT_ROW, st.dim, "ESC CLOSES");
 }
 
 /* Append the rolling frame rate as "N.M". */
@@ -762,25 +790,24 @@ static void append_ms(char *buf, size_t cap, uint32_t us) {
   str_append(buf, cap, "MS");
 }
 
-/* Kept inside 26 columns so the same text serves the overlay panel. */
+/* Kept inside MENU_TEXT_COLS so it fits the same box as the menu. */
 static void draw_about(const struct menu_style &st) {
-  fb_fill_rect(st.col0 * CELL_W, MENU_INSET, st.cols * CELL_W,
-               FB_CHUNKED_H - 2 * MENU_INSET, st.bg);
+  draw_box(st, false, false);
 
   char hdr[TEXT_COLS + 1];
   hdr[0] = '\0';
   str_append(hdr, sizeof(hdr), "MD/LYNX ");
   str_append(hdr, sizeof(hdr), RELEASE_VERSION);
 
-  int y = MENU_TITLE_ROW;
-  style_centred(st, y++, st.title, hdr);
+  int y = 0;
+  menu_centred(y++, st.title, hdr);
   y++;
-  style_centred(st, y++, st.text, "ATARI LYNX EMULATOR");
-  style_centred(st, y++, st.text, "neilrackett.com");
+  menu_centred(y++, st.text, "ATARI LYNX EMULATOR");
+  menu_centred(y++, st.text, "neilrackett.com");
   y += 2;
-  style_centred(st, y++, st.dim, "CORE: HANDY, ZLIB");
-  style_centred(st, y++, st.dim, "(C) K. WILKINS");
-  style_centred(st, y++, st.dim, "VIA XRIP/PICO-LYNX");
+  menu_centred(y++, st.dim, "CORE: HANDY, ZLIB");
+  menu_centred(y++, st.dim, "(C) K. WILKINS");
+  menu_centred(y++, st.dim, "VIA XRIP/PICO-LYNX");
   y++;
 
   char buf[TEXT_COLS + 1];
@@ -791,23 +818,23 @@ static void draw_about(const struct menu_style &st) {
     case AUDIO_MODE_YM: str_append(buf, sizeof(buf), "YM2149"); break;
     default: str_append(buf, sizeof(buf), "DETECTING"); break;
   }
-  style_centred(st, y++, st.text, buf);
+  menu_centred(y++, st.text, buf);
 
   buf[0] = '\0';
   str_append(buf, sizeof(buf), "EMU ");
   append_ms(buf, sizeof(buf), s_perf_emu_us);
   str_append(buf, sizeof(buf), " FPS ");
   append_fps(buf, sizeof(buf));
-  style_centred(st, y++, st.dim, buf);
+  menu_centred(y++, st.dim, buf);
 
   buf[0] = '\0';
   str_append(buf, sizeof(buf), "DSP ");
   append_ms(buf, sizeof(buf), s_perf_disp_us);
   str_append(buf, sizeof(buf), " PUB ");
   append_ms(buf, sizeof(buf), s_perf_pub_us);
-  style_centred(st, y++, st.dim, buf);
+  menu_centred(y++, st.dim, buf);
 
-  style_centred(st, MENU_BOT_ROW, st.dim, "PRESS ANY KEY");
+  menu_centred(MENU_ROWS - 1, st.dim, "PRESS ANY KEY");
 }
 
 /* Pens the overlay borrows: the closest pair in the cartridge's own

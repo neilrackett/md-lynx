@@ -55,7 +55,7 @@ In the menu, the d-pad moves and adjusts and South or Start selects. Providers f
 
 Xpad is an enhancement, never a requirement: with no provider present, the joystick and keyboard behave exactly as above. One caveat worth knowing — MD/Lynx boots from the cartridge _before_ the AUTO folder runs, so a provider installed as a TSR won't be resident yet. It has to come from something already present when the cartridge takes over.
 
-The menu is a panel down the right-hand side; with a cartridge running it sits over the game, which carries on playing beside it. Its two colours are borrowed from the cartridge's own palette — the shifter has only sixteen and they belong to the game — so while the menu is open the picture loses the distinction between two of its colours. They're chosen as the closest pair going, so it's usually not noticeable.
+The menu is a box in the middle of the screen, laid out like a MiSTer's on-screen display with the title running up a bar down its left-hand side; with a cartridge running it sits over the game, which carries on playing around it. Its two colours are borrowed from the cartridge's own palette — the shifter has only sixteen and they belong to the game — so while the menu is open the picture loses the distinction between two of its colours. They're chosen as the closest pair going, so it's usually not noticeable.
 
 The settings sit above the cartridge list: **volume**, **size**, **speed**, a **timings** overlay, an **about** item (version, credits and the detected sound chip) and an **exit** item to quit back to GEM.
 

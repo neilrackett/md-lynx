@@ -453,13 +453,20 @@ with EXIT heading the list and VOLUME immediately above the first cartridge,
 and it opens on that first cartridge with the settings scrolled above it. The
 cartridge currently in flash is drawn in the title colour.
 
-**Always the same panel.** The menu is a 26-column column down the right-hand
-side whether or not a cartridge is running, so it never moves under the user.
-With a game loaded it is drawn over the frame the emulator just produced and
-the game keeps running behind it (its controls are held so navigating doesn't
-also drive the game); with nothing loaded the rest of the screen is simply
-cleared. Only the pens differ, which is all `menu_style_now()` decides;
-`draw_menu()` and `draw_about()` take a `struct menu_style`.
+**Always the same box.** The menu is laid out like a MiSTer OSD: a box 30
+cells wide and 16 rows tall, centred on the screen, with a two-cell strip down
+its left edge carrying MD/LYNX in inverse, turned to read upwards
+(`text_up()`), and ▲/▼ on the strip when the list runs on past what is shown.
+The selection bar is inverted right across the list, and settings rows put
+their name on the left and their value right-aligned (`settings_label()` /
+`settings_value()`). `draw_box()` draws the frame for both `draw_menu()` and
+`draw_about()`. It is the same box whether or not a cartridge is running, so it
+never moves under the user. With a game loaded it is drawn over the frame the
+emulator just produced and the game keeps running around it (its controls are
+held so navigating doesn't also drive the game); with nothing loaded the rest
+of the screen is simply cleared. Only the pens differ, which is all
+`menu_style_now()` decides; `draw_menu()` and `draw_about()` take a
+`struct menu_style`.
 
 **Draw order matters, and is easy to get wrong.** At 2x Mikey fills only the
 even rows, and anything drawn over it -- the panel, the timings readout -- is

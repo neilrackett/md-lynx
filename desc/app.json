@@ -14,7 +14,7 @@
     "MegaST",
     "MegaSTE"
   ],
-  "binary": "https://atarist.sidecartridge.com/<APP_UUID>-<APP_VERSION>.uf2",
+  "binary": "https://downloads.neilrackett.com/md-lynx/<APP_UUID>.uf2",
   "md5": "<BINARY_MD5_HASH>",
   "version": "<APP_VERSION>"
 }

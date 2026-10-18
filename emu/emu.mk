@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # make emu, included from the Makefile. It lives here rather than there so
-# that changing it is an emulator-only change.
+# that changing it is an emulator-only change, which CI does not build or
+# release (paths-ignore in .github/workflows).
 
 ## Build MD/Lynx for this computer and run it in Hatari with EmuMD (see
 ## README.md). TOS= a TOS image (default: EmuMD's EmuTOS); RECORD=FILE.avi

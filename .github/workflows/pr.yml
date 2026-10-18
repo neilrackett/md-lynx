@@ -1,0 +1,74 @@
+name: PR
+
+# Does it build? That is the whole job. This runs the same `make` as
+# release.yml, so a PR that would break the release fails here instead,
+# but it tags nothing, publishes nothing and keeps no artifacts. There
+# is no host test suite in this repo -- verification is a build, a UF2
+# that boots and the serial log; see AGENTS.md.
+
+on:
+  pull_request:
+    branches:
+      - main
+    # Documentation and the EmuMD host build (emu/, including the
+    # submodule, and mdfw.ini) are not part of the firmware, so a change
+    # to nothing else does not need building. Keep this list the same in
+    # pr.yml and release.yml.
+    paths-ignore:
+      - '**.md'
+      - 'emu/**'
+      - 'mdfw.ini'
+
+# Read-only: this workflow runs code from a contributor's branch, so it
+# gets nothing it does not need. release.yml holds the write token.
+permissions:
+  contents: read
+
+# A force-push mid-review should not leave two builds racing to report.
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout the code
+      uses: actions/checkout@v4
+
+    - name: Fetch the xpad submodule
+      # The m68k build includes xpad/src/xpad.inc, and it runs before
+      # rp/build.sh (which inits submodules itself), so xpad has to be
+      # brought in here. Only xpad, deliberately: checkout's own
+      # `submodules: true` clones every submodule at depth 1, and a
+      # shallow pico-sdk has no tags for rp/build.sh to pin to.
+      run: git submodule update --init lib/xpad
+
+    - name: Set up Python
+      # target/atarist/build.sh runs a bare "python", which ubuntu-latest
+      # does not have; setup-python puts one on PATH. Stdlib only.
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.x"
+
+    - name: Install the Pico Toolchain
+      # The runner image ships Google's Chrome apt source, which has
+      # served mismatched index files and failed `apt update` outright.
+      # Nothing here needs it.
+      run: |
+          sudo grep -l dl.google.com /etc/apt/sources.list.d/* | xargs -r sudo rm -f
+          sudo DEBIAN_FRONTEND=noninteractive apt update || true
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential libstdc++-arm-none-eabi-newlib
+
+    - name: Install AtariST Toolkit Docker image
+      # Latest, for the same reason release.yml tracks it: the v1.0.0
+      # installer's stcmd takes the image tag from the ambient $VERSION,
+      # which build.sh exports from version.txt, so it went looking for
+      # an image named after the app's own version and never found one.
+      run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/latest/download/install_atarist_toolkit_docker.sh | bash
+
+    - name: Build
+      # No APP_UUID_KEY on purpose. The Makefile falls back to the sample
+      # UUID, which is all a build check needs, and it keeps this working
+      # for pull requests from forks, where secrets are not available.
+      run: make

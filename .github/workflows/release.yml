@@ -1,114 +1,116 @@
 name: Release
 
+# Rolling release: build with make, tag the version, move the
+# lightweight "latest" tag to this commit, and replace the binaries on
+# the existing "latest" release. The release's title and body are left
+# exactly as they are: gh release upload touches assets only.
+
 on:
-  # push:
-  #   tags:
-  #     - 'v*'
+  # Anything landing on main is a release: a merge, or a direct push,
+  # unless all it changes is in paths-ignore (run it by hand to release
+  # one of those anyway). Tag pushes do not match a branch filter, so the
+  # tags this workflow pushes cannot trigger it again.
+  push:
+    branches:
+      - main
+    # Documentation and the EmuMD host build (emu/, including the
+    # submodule, and mdfw.ini) are not part of the firmware, so a change
+    # to nothing else does not need building. Keep this list the same in
+    # pr.yml and release.yml.
+    paths-ignore:
+      - '**.md'
+      - 'emu/**'
+      - 'mdfw.ini'
   workflow_dispatch:
 
 permissions:
   contents: write
 
-jobs:
-  build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        python-version: [ "3.10" ]
-        include:
-          - os: ubuntu-latest
-    steps:
-    - name: Checkout the code
-      uses: actions/checkout@v3
+# Two merges in quick succession would otherwise race: both force-move
+# the latest tag and clobber the same two assets, and the loser decides
+# what the release ends up holding. Newest commit wins instead.
+concurrency:
+  group: release
+  cancel-in-progress: true
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v2
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # The push trigger already filters to main; this is what stops a
+    # manual dispatch from some other branch tagging and releasing it.
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - name: Check the APP_UUID_KEY secret is set
+      # Without it, make would quietly fall back to the sample UUID and
+      # release under the wrong name. Fail here, before the toolchains.
+      env:
+        APP_UUID_KEY: ${{ secrets.APP_UUID_KEY }}
+      run: test -n "$APP_UUID_KEY" || { echo "The APP_UUID_KEY secret is not set."; exit 1; }
+
+    - name: Checkout the code
+      uses: actions/checkout@v4
+
+    - name: Fetch the xpad submodule
+      # The m68k build includes xpad/src/xpad.inc, and it runs before
+      # rp/build.sh (which inits submodules itself), so xpad has to be
+      # brought in here. Only xpad, deliberately: checkout's own
+      # `submodules: true` clones every submodule at depth 1, and a
+      # shallow pico-sdk has no tags for rp/build.sh to pin to.
+      run: git submodule update --init lib/xpad
+
+    - name: Set up Python
+      # target/atarist/build.sh runs a bare "python", which ubuntu-latest
+      # does not have; setup-python puts one on PATH. Stdlib only.
+      uses: actions/setup-python@v5
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: "3.x"
 
     - name: Install the Pico Toolchain
+      # The runner image ships Google's Chrome apt source, which has
+      # served mismatched index files and failed `apt update` outright.
+      # Nothing here needs it.
       run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt update
+          sudo grep -l dl.google.com /etc/apt/sources.list.d/* | xargs -r sudo rm -f
+          sudo DEBIAN_FRONTEND=noninteractive apt update || true
           sudo DEBIAN_FRONTEND=noninteractive apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential libstdc++-arm-none-eabi-newlib
 
     - name: Install AtariST Toolkit Docker image
-      run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/download/v1.3.0/install_atarist_toolkit_docker.sh | bash
+      # Track the latest installer, not v1.0.0. The stcmd that v1.0.0
+      # generates takes the Docker image tag from the ambient $VERSION,
+      # and build.sh exports VERSION from version.txt, so CI went looking
+      # for an image tagged with the app's own version and every release
+      # run died with "manifest unknown". Newer installers read
+      # STCMD_IMAGE_TAG instead, so there is nothing left to collide, and
+      # they honour STCMD_NO_TTY (which build.sh already sets on every
+      # call) rather than needing the -it flag sed'd out of the wrapper.
+      # The image tag was never pinned in either case: both installers
+      # default to :latest.
+      run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/latest/download/install_atarist_toolkit_docker.sh | bash
 
-    - name: Run - remove interactive
-      run: sed -i 's/-it//' /usr/local/bin/stcmd
-
-    - name: Install dependencies
-      run: |
-        pip install boto3
-          
-    - name: Resolve APP_UUID (falls back to the dev UUID when no secret is set)
+    - name: Build
+      # The Makefile skips the version bump, so this builds exactly what
+      # the tree says. The app UUID comes from the APP_UUID_KEY secret;
+      # uuid.txt is deliberately not committed.
       env:
-        APP_UUID_SECRET: ${{ secrets.APP_UUID }}
-      run: echo "APP_UUID=${APP_UUID_SECRET:-44444444-4444-4444-8444-444444444444}" >> "$GITHUB_ENV"
+        APP_UUID_KEY: ${{ secrets.APP_UUID_KEY }}
+      run: make
 
-    - name: Run - Build PICO_W release version
-      run: ./build.sh pico_w Release "$APP_UUID"
-
-    - name: Get current date
-      id: build
-      run: echo "::set-output name=date::$(date -u +"%Y-%m-%d %H:%M:%S UTC")"
-
-    - name: Get version from version.txt
-      id: get_version
-      run: echo "RELEASE_VERSION=$(cat version.txt)" >> $GITHUB_ENV
-
-    - name: Read partial CHANGELOG.md content
-      id: changelog
+    - name: Tag the version and move latest
       run: |
-        echo "CHANGELOG<<EOF" >> $GITHUB_ENV
-        awk '/^---$/ { exit } { print }' CHANGELOG.md >> $GITHUB_ENV
-        echo "EOF" >> $GITHUB_ENV
+        VERSION=$(tr -d '\r\n' < version.txt)
+        if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+          echo "Tag $VERSION already exists; leaving it where it is."
+        else
+          git tag "$VERSION"
+        fi
+        git tag -f latest
+        git push origin "refs/tags/$VERSION" +refs/tags/latest
 
-    - name: Copy release artifacts
-      run: |
-        mkdir -p release
-        cp dist/*.uf2 release/
-        cp dist/*.json release/
-
-    - name: Upload the binaries to release
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: release/*
-        tag: ${{ github.ref }}
-        release_name: ${{ env.RELEASE_VERSION }}
-        body: |
-          **Release Notes:**
-          - Build Date: ${{ steps.build.outputs.date }}
-          - Version: ${{ env.RELEASE_VERSION }}
-
-          ${{ env.CHANGELOG }}
-        file_glob: true
-        overwrite: true
-        make_latest: true
-
-    - name: Upload artifacts to S3
-      # Skip S3 publishing for development builds (the dev UUID). A real
-      # release sets the APP_UUID secret to the app's own UUID.
-      if: env.APP_UUID != '44444444-4444-4444-8444-444444444444'
+    - name: Replace the binaries on the latest release
       env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        AWS_DEFAULT_REGION: us-east-1  # or your bucket's region
+        GH_TOKEN: ${{ github.token }}
+        UUID: ${{ secrets.APP_UUID_KEY }}
       run: |
-        python3 <<EOF
-        import os
-        import boto3
-
-        s3 = boto3.client('s3')
-        release_dir = 'release'
-        bucket_name = 'atarist.sidecartridge.com'
-
-        for filename in os.listdir(release_dir):
-            local_path = os.path.join(release_dir, filename)
-            s3_path = filename  # uploaded at root of the bucket
-            print(f"Uploading {local_path} to s3://{bucket_name}/{s3_path}")
-            s3.upload_file(local_path, bucket_name, s3_path)
-        EOF
-
-  
+        VERSION=$(tr -d '\r\n' < version.txt)
+        cp "dist/$UUID-$VERSION.uf2" "dist/$UUID.uf2"
+        gh release upload latest "dist/$UUID.uf2" "dist/$UUID.json" --clobber

@@ -96,15 +96,20 @@ jobs:
       run: make
 
     - name: Tag the version and move latest
+      # Ask GitHub whether the version is tagged: the checkout fetches no
+      # tags, so a local check always says no, and pushing a tag that is
+      # already there is rejected.
       run: |
         VERSION=$(tr -d '\r\n' < version.txt)
-        if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+        REFS=+refs/tags/latest
+        if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
           echo "Tag $VERSION already exists; leaving it where it is."
         else
           git tag "$VERSION"
+          REFS="refs/tags/$VERSION $REFS"
         fi
         git tag -f latest
-        git push origin "refs/tags/$VERSION" +refs/tags/latest
+        git push origin $REFS
 
     - name: Replace the binaries on the latest release
       env:

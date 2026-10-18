@@ -57,6 +57,8 @@ extern "C" {
 
 #include "lynx/handy.h"
 
+#include "builtin_pongwars.h" /* seeded into the cartridge folder */
+
 extern "C" {
 extern const struct FB_FONT font8x8; /* defined in fb.c */
 }
@@ -164,6 +166,17 @@ struct game_entry {
 };
 static struct game_entry s_games[LYNX_MAX_GAMES] __cart_app_free("games");
 static int s_game_count;
+
+/* Cartridges baked into the firmware (flash) and seeded into the
+ * cartridge folder on boot -- see scan_games(). */
+static const struct {
+  const char *name;
+  const uint8_t *data;
+  uint32_t size;
+} BuiltinGames[] = {
+    {"Pong Wars.lnx", lynx_builtin_pongwars, lynx_builtin_pongwars_len},
+};
+#define LYNX_BUILTIN_GAMES (sizeof(BuiltinGames) / sizeof(BuiltinGames[0]))
 
 static char s_folder[64] = "/lynx";
 
@@ -509,6 +522,33 @@ static void scan_games(void) {
     g->size = (uint32_t)fno.fsize;
   }
   f_closedir(&dir);
+
+  /* Make sure the built-in cartridges are always in the folder, whatever
+   * else is there. FA_CREATE_NEW fails harmlessly if one already exists
+   * (FAT names are case-insensitive), in which case the scan above has
+   * listed it; otherwise it is written and added. They're ordinary files
+   * the user can delete -- they just come back on the next boot. */
+  for (unsigned i = 0; i < LYNX_BUILTIN_GAMES && s_game_count < LYNX_MAX_GAMES;
+       i++) {
+    char path[128];
+    path[0] = '\0';
+    str_append(path, sizeof(path), s_folder);
+    str_append(path, sizeof(path), "/");
+    str_append(path, sizeof(path), BuiltinGames[i].name);
+    FIL f;
+    if (f_open(&f, path, FA_CREATE_NEW | FA_WRITE) != FR_OK) continue;
+    UINT bw = 0;
+    f_write(&f, BuiltinGames[i].data, BuiltinGames[i].size, &bw);
+    f_close(&f);
+    if (bw != BuiltinGames[i].size) {
+      f_unlink(path); /* not a half-written cartridge to trip over later */
+      continue;
+    }
+    struct game_entry *g = &s_games[s_game_count++];
+    strncpy(g->name, BuiltinGames[i].name, sizeof(g->name) - 1);
+    g->name[sizeof(g->name) - 1] = '\0';
+    g->size = BuiltinGames[i].size;
+  }
   DPRINTF("Found %d cartridge(s) in %s\n", s_game_count, s_folder);
 }
 

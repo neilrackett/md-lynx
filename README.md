@@ -14,6 +14,8 @@ Sound comes out of the STE's DMA chip at 25 kHz where the machine has it, and fa
 
 Any cartridge image in `.lnx`, `.lyx`, `.o` or `.bin` format can be played using the Atari ST keyboard, a joystick, or a modern gamepad via [Xpad](https://github.com/neilrackett/atarist-xpad), just drop them into the `/lynx` folder of your SD card and they'll appear on the menu. No Lynx BIOS ROM is needed. There's a growing library of homebrew titles at [AtariAge](https://atariage.com/software_list.php?SystemID=LYNX&currentPage=1&maxPages=1) to get you started; commercial titles you'll need to dump from your own cartridges, although you may be able to find ready made backups in the [Internet Archive](https://archive.org/details/atari-lynx-roms). (Games flagged as rotated, like Gauntlet — The Third Encounter, play upright rather than sideways.)
 
+So there's something to play straight away, MD/Lynx comes with [Pong Wars](https://github.com/neilrackett/atarilynx-pongwars) built in, and copies it into `/lynx` whenever it isn't there already.
+
 Ported from K. Wilkins' [Handy](https://sourceforge.net/projects/handy/), via xrip's [pico-lynx](https://github.com/xrip/pico-lynx), so a massive thank you to both of them for their fantastic work!
 
 ## Controls
@@ -135,4 +137,4 @@ For more on coding for the SidecarT, [the docs are here](https://docs.sidecartri
 
 Source code is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for the full text. The vendored emulator core (`rp/src/lynx/`) retains its original zlib licence, and the files altered for this port are marked as such, as that licence requires. [Xpad](https://github.com/neilrackett/atarist-xpad), included as the `lib/xpad` submodule, is BSD-2-Clause.
 
-No cartridge images are included or distributed with this project. Atari and Lynx are trademarks of their respective owners.
+Apart from Pong Wars, also GPL-3.0, no cartridge images are included or distributed with this project. Atari and Lynx are trademarks of their respective owners.

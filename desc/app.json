@@ -1,7 +1,7 @@
 {
   "uuid": "<APP_UUID>",
   "name": "MD/Lynx: Atari Lynx Emulator",
-  "description": "MD/Lynx turns your Atari ST into an Atari Lynx, powered by your SidecarTridge Multi-device! For more information, visit <a href=\"https://neilrackett.com/atarist\">neilrackett.com</a>.",
+  "description": "MD/Lynx turns your Atari ST into an Atari Lynx, powered by your SidecarTridge Multi-device! It comes with a Pong Wars demo cartridge and you can add your own simply by copying them to the /lynx folder on your SD card. For more information, visit <a href=\"https://neilrackett.com/atarist\">neilrackett.com</a>.",
   "image": "https://placehold.co/256x256/png",
   "tags": [
     "Sample",

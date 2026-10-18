@@ -480,11 +480,12 @@ their name on the left and their value right-aligned (`settings_label()` /
 never moves under the user. With a game loaded it is drawn over the frame the
 emulator just produced and the game keeps running around it (its controls are
 held so navigating doesn't also drive the game); with nothing loaded the rest
-of the screen is simply cleared. It is two colours either way, navy and
-white, like MiSTer's: everything is ink on the fill, and the strip and the
-selection bar are the fill on ink. Only the pens differ -- two borrowed from
-the cartridge, or the menu palette's own -- which is all `menu_style_now()`
-decides; `draw_menu()` and `draw_about()` take a `struct menu_style`.
+of the screen is simply cleared. It is two colours either way, like
+MiSTer's: everything is ink on the fill, and the strip and the selection bar
+are the fill on ink. Only the pens differ -- the cartridge's darkest and
+lightest, or the menu palette's navy and white -- which is all
+`menu_style_now()` decides; `draw_menu()` and `draw_about()` take a
+`struct menu_style`.
 
 **Draw order matters, and is easy to get wrong.** At 2x Mikey fills only the
 even rows, and anything drawn over it -- the panel, the timings readout -- is
@@ -497,11 +498,15 @@ at all, since it only ever converts the even rows, so the full transpose is
 used whenever something is drawn on top.
 
 The panel cannot bring its own colours — the shifter's sixteen belong to the
-cartridge. `choose_overlay_pens()` borrows two, picked as the closest pair in
-the cartridge's palette (collapsing two near-identical colours costs the
-picture least), and `publish_lynx_palette()` forces those two to navy and white
-while the overlay is up. They are chosen once on open, so a game animating its
-palette doesn't make the panel flicker.
+cartridge. `choose_overlay_pens()` borrows two: the darkest pen in the
+cartridge's palette for the fill and the lightest for the ink, by
+`lynx_luma()`. They keep the colours they already have, so the picture around
+the menu doesn't change. They are chosen once on open and
+`publish_lynx_palette()` holds them at those colours while the overlay is up,
+so a game fading or cycling its palette behind the menu can't take the text
+with it. A palette with no real contrast (the darkest and lightest closer than
+`OVERLAY_MIN_CONTRAST`, as on a black screen or mid-fade) has nothing readable
+to borrow, so then the two pens take the startup menu's navy and white.
 
 **Xpad.** [Xpad](https://github.com/neilrackett/atarist-xpad) is an open
 standard for describing a modern gamepad to ST software: a provider publishes

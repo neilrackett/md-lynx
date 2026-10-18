@@ -175,9 +175,11 @@ static uint32_t s_full_speed = 1; /* 1 = true 60 Hz, 0 = 50 Hz (slower) */
 static uint32_t s_show_perf;      /* overlay emulation timings in play  */
 static uint32_t s_scale = 2;      /* 2 = fill the screen, 1 = centred    */
 
-/* The two cartridge pens the overlay panel borrows while it is open;
- * picked by choose_overlay_pens() below. */
+/* The two cartridge pens the overlay panel borrows while it is open,
+ * and the colours they are held at; picked by choose_overlay_pens()
+ * below. */
 static uint8_t s_ov_bg = 0, s_ov_ink = 1;
+static uint16_t s_ov_bg_rgb, s_ov_ink_rgb;
 
 static int s_menu_active = 1;
 static int s_about_active;
@@ -289,13 +291,13 @@ static void publish_lynx_palette(void) {
     entries[i] = lynx_to_st(p[i].Colours.Red, p[i].Colours.Green,
                             p[i].Colours.Blue);
   }
-  /* While the overlay is up, the two pens it borrowed are forced to a
-   * readable pair. The picture behind loses the distinction between
-   * them for as long as the menu is open -- they were picked as the
-   * closest pair precisely so that costs the least. */
+  /* While the overlay is up, the two pens it borrowed are held at the
+   * colours choose_overlay_pens() gave them, so a game fading or cycling
+   * its palette behind the menu can't take the text with it. Usually
+   * those are the colours the pens already had, and nothing changes. */
   if (s_menu_active || s_about_active) {
-    entries[s_ov_bg] = PALETTE_RGB(0, 0, 2);
-    entries[s_ov_ink] = PALETTE_RGB(7, 7, 7);
+    entries[s_ov_bg] = s_ov_bg_rgb;
+    entries[s_ov_ink] = s_ov_ink_rgb;
   }
   palette_set(entries);
 }
@@ -672,10 +674,10 @@ struct menu_style {
   uint8_t ink; /* text, the strip and the selection bar               */
 };
 
-/* The menu is always the same box in the same two colours, navy and
- * white, whether or not a cartridge is running. Only the pens differ:
- * over a running game it borrows two of the cartridge's, and with
- * nothing loaded it uses the menu palette's own. */
+/* The menu is always the same box in two colours, whether or not a
+ * cartridge is running. Over a running game it borrows the cartridge's
+ * darkest and lightest pens (choose_overlay_pens), and with nothing
+ * loaded it uses the menu palette's navy and white. */
 static struct menu_style menu_style_now(void) {
   struct menu_style st;
   if (s_lynx != NULL) {
@@ -826,28 +828,45 @@ static void draw_about(const struct menu_style &st) {
   menu_centred(MENU_ROWS - 1, st.ink, "PRESS ANY KEY");
 }
 
-/* Pens the overlay borrows: the closest pair in the cartridge's own
- * palette, because collapsing two near-identical colours is the least
- * the picture can lose. Chosen once when the menu opens, so a game
- * animating its palette doesn't make the panel flicker. */
+/* Brightness of a Lynx colour, 0..150: green counts most, blue least. */
+static int lynx_luma(const TPALETTE &c) {
+  return 3 * c.Colours.Red + 6 * c.Colours.Green + c.Colours.Blue;
+}
+
+/* Below this the darkest and lightest are too alike to read. */
+#define OVERLAY_MIN_CONTRAST 64
+
+/* Pens the overlay borrows: the darkest in the cartridge's own palette
+ * for the box, and the lightest for the text. They keep the colours they
+ * already have, so the picture around the menu is unchanged. Chosen once
+ * when the menu opens and held there (publish_lynx_palette), so a game
+ * animating its palette doesn't make the panel flicker.
+ *
+ * A palette with no real contrast in it -- the menu opened on a black
+ * screen, or mid-fade -- has nothing readable to borrow, so then the two
+ * pens take the startup menu's navy and white instead. */
 static void choose_overlay_pens(void) {
   if (s_lynx == NULL) return;
   const TPALETTE *p = s_lynx->mMikie->GetPalette();
-  int best = 1 << 30;
-  s_ov_bg = 0;
-  s_ov_ink = 1;
+  int dark = 0;
+  for (int i = 1; i < PALETTE_ENTRIES; i++) {
+    if (lynx_luma(p[i]) < lynx_luma(p[dark])) dark = i;
+  }
+  int light = (dark == 0) ? 1 : 0;
   for (int i = 0; i < PALETTE_ENTRIES; i++) {
-    for (int j = i + 1; j < PALETTE_ENTRIES; j++) {
-      const int dr = (int)p[i].Colours.Red - (int)p[j].Colours.Red;
-      const int dg = (int)p[i].Colours.Green - (int)p[j].Colours.Green;
-      const int db = (int)p[i].Colours.Blue - (int)p[j].Colours.Blue;
-      const int d = dr * dr + dg * dg + db * db;
-      if (d < best) {
-        best = d;
-        s_ov_bg = (uint8_t)i;
-        s_ov_ink = (uint8_t)j;
-      }
-    }
+    if (i != dark && lynx_luma(p[i]) > lynx_luma(p[light])) light = i;
+  }
+  s_ov_bg = (uint8_t)dark;
+  s_ov_ink = (uint8_t)light;
+
+  if (lynx_luma(p[light]) - lynx_luma(p[dark]) < OVERLAY_MIN_CONTRAST) {
+    s_ov_bg_rgb = MenuPalette[PEN_PANEL];
+    s_ov_ink_rgb = MenuPalette[PEN_TEXT];
+  } else {
+    s_ov_bg_rgb = lynx_to_st(p[dark].Colours.Red, p[dark].Colours.Green,
+                             p[dark].Colours.Blue);
+    s_ov_ink_rgb = lynx_to_st(p[light].Colours.Red, p[light].Colours.Green,
+                              p[light].Colours.Blue);
   }
 }
 

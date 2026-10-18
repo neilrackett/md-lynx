@@ -1,5 +1,7 @@
 # MD/Lynx
 
+<img src="desc/hero.webp" width="640" height="400" alt="MD/Lynx with menu open" />
+
 Microfirmware for the [SidecarTridge Multi-device](https://sidecartridge.com) by [Neil Rackett](https://neilrackett.com/atarist)
 
 ## Introduction

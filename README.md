@@ -12,7 +12,7 @@ The Lynx and the ST both show 16 colours at once, so the Lynx palette goes strai
 
 Sound comes out of the STE's DMA chip at 25 kHz where the machine has it, and falls back to the YM2149 on a plain ST. It's detected at boot, there's nothing to set up.
 
-Any cartridge image in `.lnx`, `.lyx`, `.o` or `.bin` format can be played using the Atari ST keyboard, a joystick, or a modern gamepad via [Xpad](https://github.com/neilrackett/atarist-xpad), just drop them into the `/lynx` folder of your SD card and they'll appear on the menu. No Lynx BIOS ROM is needed. There's a growing library of homebrew titles at [AtariAge](https://atariage.com/software_list.php?SystemID=LYNX&currentPage=1&maxPages=1) to get you started; commercial titles you'll need to dump from your own cartridges, although you may be able to find ready made backups in the [Internet Archive](https://archive.org/details/atari-lynx-roms). (Games flagged as rotated, like Gauntlet — The Third Encounter, play upright rather than sideways.)
+Any cartridge image in `.lnx`, `.lyx`, `.o` or `.bin` format can be played using the Atari ST keyboard or a joystick, just drop them into the `/lynx` folder of your SD card and they'll appear on the menu. No Lynx BIOS ROM is needed. There's a growing library of homebrew titles at [AtariAge](https://atariage.com/software_list.php?SystemID=LYNX&currentPage=1&maxPages=1) to get you started; commercial titles you'll need to dump from your own cartridges, although you may be able to find ready made backups in the [Internet Archive](https://archive.org/details/atari-lynx-roms). (Games flagged as rotated, like Gauntlet — The Third Encounter, play upright rather than sideways.)
 
 So there's something to play straight away, MD/Lynx comes with [Pong Wars](https://github.com/neilrackett/atarilynx-pongwars) built in, and copies it into `/lynx` whenever it isn't there already.
 
@@ -40,24 +40,6 @@ d-pad, and the two fire buttons sit under the keys nearest the cursors.
 Pause is on **F3** as well as **P**, because several titles want it held together with an Option button — screen flip for left-handed play being the familiar one — and F1/F2/F3 fall under one hand where F1+P doesn't.
 
 A real ST joystick works in port 1, in both play and the menu — the stick is the d-pad and fire is Button A. The mouse's buttons are B and A, left to right: the right one is the joystick's fire, so it's Button A too, and the left one adds Button B. That still leaves Option 1, Option 2 and Pause on the keyboard.
-
-### Gamepads, via Xpad
-
-For anything with more than one button, MD/Lynx reads [Xpad](https://github.com/neilrackett/atarist-xpad) — the open standard where a provider publishes controller state and installs the `XPAD` cookie, and software like this polls it. When a provider is running, pad 0 maps like this:
-
-| Gamepad                     | Lynx                    |
-| --------------------------- | ----------------------- |
-| D-pad or left stick         | D-pad                   |
-| South (A on an Xbox pad)    | Button A                |
-| East (B)                    | Button B                |
-| West (X) or left shoulder   | Option 1                |
-| North (Y) or right shoulder | Option 2                |
-| Start                       | Pause                   |
-| Select / Back, or Guide     | Open and close the menu |
-
-In the menu, the d-pad moves and adjusts and South or Start selects. Providers fold the left stick into the d-pad bits, so an analogue stick works without MD/Lynx doing anything special.
-
-Xpad is an enhancement, never a requirement: with no provider present, the joystick and keyboard behave exactly as above. One caveat worth knowing — MD/Lynx boots from the cartridge _before_ the AUTO folder runs, so a provider installed as a TSR won't be resident yet. It has to come from something already present when the cartridge takes over.
 
 The menu is a box in the middle of the screen, laid out like a MiSTer's on-screen display with the title running up a bar down its left-hand side; with a cartridge running it sits over the game, which carries on playing around it. The shifter has only sixteen colours and they belong to the game, so the menu borrows the game's own darkest and lightest rather than bringing its own, and the picture around it stays exactly as it was.
 
@@ -90,7 +72,6 @@ The RP2040 runs the whole Lynx on Core 0, with Mikey drawing 2x-scaled pixels st
 
 ```
 IKBD keys + joystick       ──$FB82xx──►  demux → Lynx pad
-Xpad gamepad buttons       ──$FB88xx──►  hi byte, then lo at $FB8Axx
 Sound chip report (_SND)   ──$FB86xx──►  picks STE DMA or YM2149
                                          Core 1: chunky → ST planar (c2p)
 Screen: blit + page flip   ◄──$FA8300──  Mikey, 2x-scaled to 320x204

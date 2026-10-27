@@ -194,6 +194,12 @@ static uint8_t s_joy_pending = 0;
 
 uint8_t ikbd_get_joystick(void) { return s_joy_state[1]; }
 
+/* With the mouse off and joysticks reporting, the IKBD gives the left
+ * mouse button as port 0's fire (only port 0's directions are the
+ * phantom above, so the fire bit is safe to read). The right button is
+ * port 1's fire, wired together with the joystick's. */
+bool ikbd_get_left_mouse_button(void) { return (s_joy_state[0] & 0x80u) != 0; }
+
 void ikbd_pump(void) {
   uint8_t b;
   while (raw_pop(&b)) {

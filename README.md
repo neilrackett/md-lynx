@@ -24,22 +24,22 @@ The Lynx pad is four directions plus **A**, **B**, **Option 1**, **Option 2**
 and **Pause**. The ST cursor cluster and a joystick in port 1 both drive the
 d-pad, and the two fire buttons sit under the keys nearest the cursors.
 
-| Context | Key                                | Action                        |
-| ------- | ---------------------------------- | ----------------------------- |
-| Play    | ↑ ↓ ← →                            | D-pad                         |
-|         | Alternate / Space / Insert         | Button A                      |
-|         | Control / Shift / Clr Home         | Button B                      |
-|         | F1 / F2                            | Option 1 / Option 2           |
-|         | F3 or P                            | Pause                         |
-|         | Esc                                | Open the menu                 |
-| Menu    | ↑ ↓                                | Choose a cartridge or setting |
-|         | ← →                                | Change the selected setting   |
-|         | Return / Space / Insert / Clr Home | Select                        |
-|         | Esc                                | Close the menu                |
+| Context | Key                                | Joystick                  | Action                        |
+| ------- | ---------------------------------- | ------------------------- | ----------------------------- |
+| Play    | ↑ ↓ ← →                            | Stick                     | D-pad                         |
+|         | Alternate / Space / Insert         | Fire / Right mouse button | Button A                      |
+|         | Control / Shift / Clr Home         | Left mouse button         | Button B                      |
+|         | F1 / F2                            |                           | Option 1 / Option 2           |
+|         | F3 or P                            |                           | Pause                         |
+|         | Esc                                |                           | Open the menu                 |
+| Menu    | ↑ ↓                                | Stick up / down           | Choose a cartridge or setting |
+|         | ← →                                | Stick left / right        | Change the selected setting   |
+|         | Return / Space / Insert / Clr Home | Fire                      | Select                        |
+|         | Esc                                |                           | Close the menu                |
 
 Pause is on **F3** as well as **P**, because several titles want it held together with an Option button — screen flip for left-handed play being the familiar one — and F1/F2/F3 fall under one hand where F1+P doesn't.
 
-A real ST joystick works in port 1, in both play and the menu — the stick is the d-pad and fire is Button A. It's only one button, though, so Option 1, Option 2 and Pause stay on the keyboard.
+A real ST joystick works in port 1, in both play and the menu — the stick is the d-pad and fire is Button A. The mouse's buttons are B and A, left to right: the right one is the joystick's fire, so it's Button A too, and the left one adds Button B. That still leaves Option 1, Option 2 and Pause on the keyboard.
 
 ### Gamepads, via Xpad
 

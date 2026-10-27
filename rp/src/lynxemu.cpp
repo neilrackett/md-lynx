@@ -1149,10 +1149,12 @@ static void poll_xpad_menu_toggle(void) {
   prev = now;
 }
 
-/* The ST joystick and any Xpad, folded into one Lynx pad state. The
- * plain stick can only reach the d-pad and Button A; an Xpad reaches
- * everything (see xpad_to_lynx). The menu drives off this same mapping,
- * so there is one place where a physical control becomes a Lynx button. */
+/* The ST joystick, mouse buttons and any Xpad, folded into one Lynx pad
+ * state. The plain stick can only reach the d-pad and Button A; the
+ * mouse's buttons are B and A, left to right, its right button being
+ * the stick's fire; an Xpad reaches everything (see xpad_to_lynx). The
+ * menu drives off this same mapping, so there is one place where a
+ * physical control becomes a Lynx button. */
 static uint16_t pad_state(void) {
   const uint8_t joy = ikbd_get_joystick();
   uint16_t b = 0;
@@ -1161,6 +1163,7 @@ static uint16_t pad_state(void) {
   if (joy & 0x04) b |= BUTTON_LEFT;
   if (joy & 0x08) b |= BUTTON_RIGHT;
   if (joy & 0x80) b |= BUTTON_A;
+  if (ikbd_get_left_mouse_button()) b |= BUTTON_B;
 
   uint16_t xb;
   if (xpadin_get(&xb)) b |= xpad_to_lynx(xb);

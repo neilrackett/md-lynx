@@ -183,7 +183,10 @@ the two IRQs the app actually needs:
    `s_joy_state[]`. Only port 1 is reported by `ikbd_get_joystick()` (bit0 up,
    1 down, 2 left, 3 right, 7 fire) — with joystick reporting on, a mouse in
    port 0 reports as joystick 0 and its stationary quadrature pattern would
-   otherwise latch a phantom direction forever. Apps drain key events via
+   otherwise latch a phantom direction forever. Port 0's fire bit is safe,
+   though: with the mouse off it is the left mouse button, which
+   `ikbd_get_left_mouse_button()` reports (the right button is port 1's fire,
+   wired together with the joystick's). Apps drain key events via
    `ikbd_pop_key()`; scancode `$00` is suppressed.
 6. **ESC** — `ikbd.c` can post `CART_CMD_BOOT_GEM` to the sentinel slot on an
    ESC press+release within 200 ms, but MD/Lynx turns that off
@@ -447,8 +450,8 @@ value through the Ghostbusters `(vA, vB)` LUT.
 | Atari ST | Lynx |
 | --- | --- |
 | Cursor keys, or joystick in port 1 | D-pad |
-| Alt, Space, Insert, joystick fire | Button A |
-| Control, either Shift, Clr/Home | Button B |
+| Alt, Space, Insert, joystick fire, right mouse button | Button A |
+| Control, either Shift, Clr/Home, left mouse button | Button B |
 | F1 / F2 | Option 1 / Option 2 |
 | F3 or P | Pause |
 | ESC | Toggle the menu |

@@ -73,6 +73,11 @@ void ikbd_pump(void);
  * IKBD into joystick event-reporting mode at boot). */
 uint8_t ikbd_get_joystick(void);
 
+/* Whether the left mouse button is held, decoded by ikbd_pump from the
+ * same joystick event packets. (The right button needs no call of its
+ * own: it is the port 1 fire bit in ikbd_get_joystick.) */
+bool ikbd_get_left_mouse_button(void);
+
 /* Approximate number of raw bytes currently in the ring. */
 size_t ikbd_ring_count(void);
 

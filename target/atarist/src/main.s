@@ -1,5 +1,6 @@
 ; Firmware loader from cartridge
 ; (C) 2023-2025 by Diego Parrilla
+; Copyright (C) 2026 Neil Rackett
 ; License: GPL v3
 
 ; Some technical info about the header format https://www.atari-forum.com/viewtopic.php?t=14086
@@ -160,6 +161,20 @@ get_rez				macro
 					addq.l #2,sp
 					endm
 
+; XBIOS Setscreen, resolution only: switch to low res and leave both
+; screen addresses alone. The framebuffer is 320x200 in 16 colours, four
+; bitplanes. An ST is in low or high res when the cartridge starts, but
+; a TT starts in the resolution saved in its NVRAM, and in TT medium the
+; 32000 bytes land in the top fifth of the screen, two rows to a line.
+set_lowres			macro
+					move.w #0,-(sp)			; rez 0 = low
+					move.l #-1,-(sp)		; physical screen unchanged
+					move.l #-1,-(sp)		; logical screen unchanged
+					move.w #5,-(sp)			; XBIOS Setscreen
+					trap #14
+					lea 12(sp),sp
+					endm
+
 ; XBIOS Get Screen Base
 ; Return the screen memory address in D0
 get_screen_base		macro
@@ -280,10 +295,15 @@ start_rom_code:
 
 ; Get the resolution of the screen. High-res (640x400 mono) is not
 ; supported by the framebuffer template; bail to GEM with a message
-; mirroring md-sprites-demo's lowres_only branch.
+; mirroring md-sprites-demo's lowres_only branch. Anything else is
+; switched to low res (see set_lowres).
 	get_rez
 	cmp.w #2, d0
 	beq .highres_unsupported
+	tst.w d0
+	beq.s .rez_ok
+	set_lowres
+.rez_ok:
 
 ; Story 1.2: the old mono boot-UI loop (.print_loop_low, which read the
 ; first 8 KB of the cartridge framebuffer and expanded it 1bpp -> 4bpp

@@ -38,9 +38,11 @@ ROM4_ADDR			equ $FA0000
 ;					      TPROTOCOL handshake was removed)
 ;   $FA4008  RANDOM_TOKEN_SEED_ADDR	4 B  (legacy; as above)
 ;   $FA400C  FB_FRAME_COUNTER_ADDR	4 B
-;   $FA4010  SHARED_VARIABLES		240 B (60 x 4-byte slots. Slots 12..19
-;					      hold PALETTE_ADDR below; the other
-;					      52 slots are app-free.)
+;   $FA4010  SHARED_VARIABLES		240 B (60 x 4-byte slots. Slot 0 holds
+;					      the TT speaker setting (userfw.s
+;					      SPEAKER_ADDR) and slots 12..19
+;					      PALETTE_ADDR below; the other 51
+;					      slots are app-free.)
 ;   $FA4040    PALETTE_ADDR		32 B  (slots 12..19; 16 ST colour words
 ;					      applied to $FFFF8240.. each VBL)
 ;   $FA4100  AUDIO_BUFFER_ADDR	      1024 B  (Timer-B (vA,vB) YM volume pairs)

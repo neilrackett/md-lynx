@@ -1,4 +1,7 @@
-/**
+/*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * File: audio.h
  * Description: Cart-shared audio buffer producer + app-facing API.
  *
@@ -35,6 +38,7 @@
 #ifndef AUDIO_H_INCLUDED
 #define AUDIO_H_INCLUDED
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -77,9 +81,15 @@ audio_mode_t audio_get_mode(void);
 void audio_set_fill_bytes(uint32_t bytes);
 
 /* commemul ring consumer. Passed each captured ROM3 sample by the
- * dispatcher in fb.c; filters for the m68k's sound-capability and
- * buffer-length report windows and applies what it finds. */
+ * dispatcher in fb.c; filters for the m68k's sound-capability report
+ * (which also says whether this is a TT) and buffer-length report
+ * windows and applies what it finds. */
 void audio_consume_rom3_sample(uint16_t addr_lsb);
+
+/* True once the m68k has reported a TT (bit 1 of the sound-capability
+ * report), whose internal speaker can be switched on and off; false
+ * until then and on every other machine. */
+bool audio_has_tt_speaker(void);
 
 typedef void (*audio_fill_cb_t)(uint8_t *buf, uint32_t bytes);
 

@@ -187,6 +187,7 @@ static uint32_t s_volume = 16;    /* 0..20                              */
 static uint32_t s_full_speed = 1; /* 1 = true 60 Hz, 0 = 50 Hz (slower) */
 static uint32_t s_show_perf;      /* overlay emulation timings in play  */
 static uint32_t s_scale = 2;      /* 2 = fill the screen, 1 = centred    */
+static uint32_t s_tt_speaker;     /* TT internal speaker; offered on a TT */
 
 /* The two cartridge pens the overlay panel borrows while it is open,
  * and the colours they are held at; picked by choose_overlay_pens()
@@ -313,6 +314,16 @@ static void publish_lynx_palette(void) {
     entries[s_ov_ink] = s_ov_ink_rgb;
   }
   palette_set(entries);
+}
+
+/* The menu's TT speaker setting, for the m68k to apply at its next VBL
+ * (userfw.s, which only acts on a TT and only when the value changes).
+ * Written every frame, with or without a cartridge. */
+static void publish_tt_speaker(void) {
+  volatile uint16_t *spk =
+      (volatile uint16_t *)((uint8_t *)&__rom_in_ram_start__ +
+                            CART_SPEAKER_OFFSET);
+  *spk = (uint16_t)(s_tt_speaker != 0);
 }
 
 /* =========================== Display scaling ============================= */
@@ -565,24 +576,36 @@ static void display_name(const struct game_entry *g, char *out, size_t cap,
 
 /* ================================= Menu ================================== */
 
-#define UI_ITEM_VOLUME 0
-#define UI_ITEM_SCALE 1
-#define UI_ITEM_SPEED 2
-#define UI_ITEM_PERF 3
-#define UI_ITEM_ABOUT 4
-#define UI_ITEM_EXIT 5
-#define UI_ITEM_COUNT 6
+#define UI_ITEM_TT_SPEAKER 0 /* on a TT only, so it must stay first */
+#define UI_ITEM_VOLUME 1
+#define UI_ITEM_SCALE 2
+#define UI_ITEM_SPEED 3
+#define UI_ITEM_PERF 4
+#define UI_ITEM_ABOUT 5
+#define UI_ITEM_EXIT 6
+#define UI_ITEM_COUNT 7
+
+/* The settings shown are UI_ITEM_* from ui_first_item() on: the TT
+ * speaker item only once the m68k has reported a TT, so elsewhere the
+ * list starts one item later. A selection < 0 (-1 being the row next to
+ * the cartridges) maps to its item with sel_to_item(). The list only
+ * ever grows (audio_has_tt_speaker() latches), so a selection stays
+ * valid when it does. */
+static int ui_first_item(void) { return audio_has_tt_speaker() ? 0 : 1; }
+static int ui_item_count(void) { return UI_ITEM_COUNT - ui_first_item(); }
+static int sel_to_item(int sel) { return -sel - 1 + ui_first_item(); }
 
 static const char *SpeedNames[2] = {"50HZ SMOOTH", "60HZ TRUE"};
 static const char *ScaleNames[2] = {"1X CENTRED", "2X FULL"};
 static const char *OnOffNames[2] = {"OFF", "ON"};
 
 /* Menu items live ABOVE the games in the same list: index >= 0 is a
- * cartridge, index -1 .. -UI_ITEM_COUNT are the settings rows. Each
+ * cartridge, index -1 .. -ui_item_count() are the settings rows. Each
  * reads the way MiSTer's do, its name on the left and its value, if it
  * has one, right-aligned against the far edge. */
 static const char *settings_label(int item) {
   switch (item) {
+    case UI_ITEM_TT_SPEAKER: return "TT SPEAKER";
     case UI_ITEM_VOLUME: return "VOLUME";
     case UI_ITEM_SCALE: return "SIZE";
     case UI_ITEM_SPEED: return "SPEED";
@@ -596,6 +619,7 @@ static const char *settings_label(int item) {
 /* `digits` is scratch for a value that has to be formatted. */
 static const char *settings_value(int item, char *digits, size_t cap) {
   switch (item) {
+    case UI_ITEM_TT_SPEAKER: return OnOffNames[s_tt_speaker ? 1 : 0];
     case UI_ITEM_VOLUME: return fmt_uint(s_volume, digits, cap);
     case UI_ITEM_SCALE: return ScaleNames[s_scale == 2u ? 1 : 0];
     case UI_ITEM_SPEED: return SpeedNames[s_full_speed ? 1 : 0];
@@ -609,24 +633,26 @@ static const char *settings_value(int item, char *digits, size_t cap) {
  * cartridges below, the same layout as MD/Speccy. The selection is held
  * as a signed index (>= 0 cartridge, < 0 setting) so the two kinds never
  * collide, which makes the row number very nearly a plain offset: the
- * settings occupy rows 0..UI_ITEM_COUNT-1 in reverse declaration order,
- * so EXIT heads the list and VOLUME sits at the bottom of the block.
+ * settings occupy rows 0..ui_item_count()-1 in reverse declaration
+ * order, so EXIT heads the list and VOLUME (or TT SPEAKER, on a TT) sits
+ * at the bottom of the block.
  *
  * A blank, unselectable row separates the two groups -- but only when
  * there are cartridges to separate from, hence menu_gap(). */
 static int menu_gap(void) { return s_game_count > 0 ? 1 : 0; }
 static int menu_rows_total(void) {
-  return UI_ITEM_COUNT + menu_gap() + s_game_count;
+  return ui_item_count() + menu_gap() + s_game_count;
 }
 static bool row_is_gap(int row) {
-  return menu_gap() && row == UI_ITEM_COUNT;
+  return menu_gap() && row == ui_item_count();
 }
 static int sel_to_row(int sel) {
-  return (sel >= 0) ? sel + UI_ITEM_COUNT + menu_gap() : sel + UI_ITEM_COUNT;
+  return (sel >= 0) ? sel + ui_item_count() + menu_gap()
+                    : sel + ui_item_count();
 }
 static int row_to_sel(int row) {
-  return (row > UI_ITEM_COUNT) ? row - UI_ITEM_COUNT - menu_gap()
-                               : row - UI_ITEM_COUNT;
+  return (row > ui_item_count()) ? row - ui_item_count() - menu_gap()
+                                 : row - ui_item_count();
 }
 
 static void ui_move(int dir) {
@@ -647,7 +673,8 @@ static void load_game(int index);
 
 static void ui_adjust(int dir) {
   if (s_selected >= 0) return;
-  switch (-s_selected - 1) {
+  switch (sel_to_item(s_selected)) {
+    case UI_ITEM_TT_SPEAKER: s_tt_speaker = (dir > 0); break;
     case UI_ITEM_VOLUME:
       if (dir > 0 && s_volume < 20) s_volume++;
       else if (dir < 0 && s_volume > 0) s_volume--;
@@ -667,7 +694,7 @@ static void ui_select(void) {
     load_game(s_selected);
     return;
   }
-  switch (-s_selected - 1) {
+  switch (sel_to_item(s_selected)) {
     case UI_ITEM_ABOUT: s_about_active = 1; break;
     case UI_ITEM_EXIT: ikbd_request_boot_gem(); break;
     default: break;
@@ -791,16 +818,16 @@ static void draw_menu(const struct menu_style &st) {
       display_name(&s_games[item], line, sizeof(line), MENU_TEXT_COLS);
       text_px(MENU_TEXT_X, y, pen, line);
     } else {
-      text_px(MENU_TEXT_X, y, pen, settings_label(-item - 1));
+      text_px(MENU_TEXT_X, y, pen, settings_label(sel_to_item(item)));
       text_px(MENU_TEXT_R, y, pen,
-              settings_value(-item - 1, digits, sizeof(digits)),
+              settings_value(sel_to_item(item), digits, sizeof(digits)),
               FONT_ALIGN_RIGHT);
     }
   }
 
   if (s_game_count == 0) {
-    menu_centred(UI_ITEM_COUNT + 1, st.ink, "NO CARTRIDGES");
-    menu_centred(UI_ITEM_COUNT + 2, st.ink, s_folder);
+    menu_centred(ui_item_count() + 1, st.ink, "NO CARTRIDGES");
+    menu_centred(ui_item_count() + 2, st.ink, s_folder);
   }
 }
 
@@ -1222,6 +1249,7 @@ void lynxemu_render_frame(void) {
   if (overlay || s_lynx == NULL) {
     drive_menu_from_pad();
   }
+  publish_tt_speaker();
 
   /* No cartridge yet: there is nothing to overlay onto, so the menu
    * takes the whole screen with its own palette. (drive_menu_from_pad

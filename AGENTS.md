@@ -214,7 +214,8 @@ beyond calling `audio_get_mode()`.
    no DMA. Building with `FORCE_NO_DMA=1` forces the fallback so the YM path
    can be exercised on an STE.
 2. **Reporting.** Every VBL the m68k does one cart-bus read at
-   `SNDCAP_WINDOW_BASE + has_dma` (`$FB8600`). `fb.c`'s ROM3 dispatch hands every
+   `SNDCAP_WINDOW_BASE + UFW_SNDCAP` (`$FB8600..3`: bit 0 DMA sound, bit 1 a
+   TT — see "TT speaker"). `fb.c`'s ROM3 dispatch hands every
    sample to `audio_consume_rom3_sample()`, which owns that window and
    calls `audio_set_mode(AUDIO_MODE_DMA | AUDIO_MODE_YM)` to set the
    per-VBL refill size. Before the first report the mode is
@@ -299,7 +300,7 @@ The Atari ST sees a 64 KB window at `$FA0000`–`$FAFFFF` (mirrored RP-side at `
 | `$FA4000` | `CMD_MAGIC_SENTINEL_ADDR` | 4 B | RP→m68k command word (`CMD_NOP`, `CMD_RESET`, `CMD_BOOT_GEM`, `CMD_START`). |
 | `$FA4004` | (reserved) | 8 B | Former RANDOM_TOKEN / RANDOM_TOKEN_SEED slots from the TPROTOCOL handshake; unused since that handshake was removed. |
 | `$FA400C` | `FB_FRAME_COUNTER_ADDR` | 4 B | RP-incremented dirty-frame counter; `userfw.s` only blits when this changes. |
-| `$FA4010` | `SHARED_VARIABLES` | 240 B | 60 × 4 B indexed slots. **Slots 12–19 are the palette below — not free.** The other 52 slots are free for apps. |
+| `$FA4010` | `SHARED_VARIABLES` | 240 B | 60 × 4 B indexed slots. **Slot 0 is the TT speaker word (`CART_SPEAKER_OFFSET` / `SPEAKER_ADDR`, see "TT speaker") and slots 12–19 are the palette below — not free.** The other 51 slots are free for apps. |
 | `$FA4040` | `PALETTE` (`CART_PALETTE_OFFSET` / `PALETTE_ADDR`) | 32 B | 16 ST colour words (`0000.0RRR.0GGG.0BBB`) inside `SHARED_VARIABLES` slots 12–19. The m68k VBL handler copies these to `$FFFF8240..$FFFF825E` every frame, so the RP owns the palette. Leave it zeroed (= all-black) and write `$FFFF8240` from your own m68k code if you'd rather drive it yourself. |
 | `$FA4100` | `AUDIO_BUFFER_ADDR` | 1024 B | Audio buffer, refilled by the RP once per VBL with whichever format the detected back-end wants: 500 signed PCM bytes for STE DMA sound (the m68k copies them into the screen-page-tail double buffer the DMA is not playing), or ~224 B of (vA, vB) YM volume pairs consumed by the Timer-B IRQ (A0 is reset to the buffer base every vsync, and the remaining ~800 B is drift headroom). |
 | `$FA4500` | `APP_FREE_ADDR` | ~15.5 KB | Contiguous arena, ends at FRAMEBUFFER. The ST never reads it, so MD/Lynx overlays it with the `CART_APP_FREE` linker region and parks RP-side buffers there (`__cart_app_free`) — see "Memory layout". |
@@ -468,9 +469,31 @@ does the same for menu navigation so a single edge detector covers both.
 In the menu the cursor keys navigate and adjust, Return/Space select, and ESC
 goes back to the game. It is one flat list with the settings block on top and
 the cartridges below, the same layout as MD/Speccy: `sel_to_row()` is a plain
-`+ UI_ITEM_COUNT` offset, so the settings land in reverse declaration order
-with EXIT heading the list and VOLUME immediately above the first cartridge,
-and it opens on that first cartridge with the settings scrolled above it.
+`+ ui_item_count()` offset, so the settings land in reverse declaration order
+with EXIT heading the list and VOLUME (TT SPEAKER on a TT) immediately above
+the first cartridge, and it opens on that first cartridge with the settings
+scrolled above it.
+
+**TT speaker.** On a TT only, the menu has a **TT SPEAKER** setting (OFF, the
+default, or ON) for the TT's internal speaker, as MD/Speccy has. Its enable is
+bit 6 of the YM's port A, **active low**: the TT030 Hardware Reference
+Manual's port A table reads "*Speaker Disable (0 disables internal speaker)"
+(Hatari doesn't emulate the speaker). Don't reuse this on a Falcon without
+checking its polarity.
+
+- `userfw.s` finds a TT from `_MCH` (high word 2) with a second inline jar
+  walk beside the `_SND` one, and reports it as bit 1 of SNDCAP;
+  `audio_has_tt_speaker()` latches it (a list that only grows keeps the menu
+  selection valid).
+- The item is `UI_ITEM_TT_SPEAKER` (0) and must stay first: elsewhere the
+  list starts one item later (`ui_first_item()` / `ui_item_count()` /
+  `sel_to_item()` map selections to items).
+- The RP writes the setting every frame to `CART_SPEAKER_OFFSET` (`$FA4010`,
+  `SHARED_VARIABLES` slot 0); zero, as the erased region starts, is off. The
+  m68k's VBL loop read-modify-writes port A at IPL 7 on a TT when the value
+  changes (the other bits are the floppy selects, printer strobe, RTS/DTR and
+  LAN select), then re-latches reg 8 for the Timer-B YM path. Boot saves port
+  A; the exit to GEM puts bit 6 back.
 
 **Always the same box.** The menu is laid out like a MiSTer OSD: a box 30
 cells wide and 16 rows tall, centred on the screen, with a two-cell strip down

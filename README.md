@@ -43,7 +43,7 @@ A real ST joystick works in port 1, in both play and the menu — the stick is t
 
 The menu is a box in the middle of the screen, laid out like a MiSTer's on-screen display with the title running up a bar down its left-hand side; with a cartridge running it sits over the game, which carries on playing around it. The shifter has only sixteen colours and they belong to the game, so the menu borrows the game's own darkest and lightest rather than bringing its own, and the picture around it stays exactly as it was.
 
-The settings sit above the cartridge list: **volume**, **size**, **speed**, a **timings** overlay, an **about** item (version, credits and the detected sound chip) and an **exit** item to quit back to GEM.
+The settings sit above the cartridge list: **volume**, **size**, **speed**, a **timings** overlay, an **about** item (version, credits and the detected sound chip) and an **exit** item to quit back to GEM. On a TT, a **TT speaker** setting turns the TT's internal speaker on or off (off by default); it goes back to how TOS had it when you exit.
 
 **size** is `2X FULL` (the default), which fills the ST screen, or `1X CENTRED`, which shows the Lynx's 160x102 pixel-for-pixel in the middle of the screen with a border. 1x is smaller but exact — no doubling.
 

@@ -1,4 +1,7 @@
-/**
+/*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * File: cart_shared.h
  * Description: Cart 64 KB shared-region layout + cart-bus helpers.
  *
@@ -46,9 +49,13 @@
  *                                        is unchanged since the
  *                                        previous iteration)
  *   $FA4010  SHARED_VARIABLES    240 B  (60 indexed 4-byte slots.
- *                                        Slots 12..19 hold PALETTE
- *                                        below -- the other 52 slots
- *                                        are app-free.)
+ *                                        Slot 0 holds SPEAKER and
+ *                                        slots 12..19 PALETTE, below
+ *                                        -- the other 51 slots are
+ *                                        app-free.)
+ *   $FA4010    SPEAKER             2 B  (slot 0; TT internal speaker
+ *                                        on/off, see
+ *                                        CART_SPEAKER_OFFSET)
  *   $FA4040    PALETTE            32 B  (slots 12..19; 16 ST colour
  *                                        words, applied to
  *                                        $FFFF8240.. by the m68k VBL
@@ -66,6 +73,14 @@
 #define CART_FB_FRAME_COUNTER_OFFSET     (CART_SHARED_BLOCK_OFFSET + 0x0C)
 #define CART_SHARED_VARIABLES_OFFSET     (CART_SHARED_BLOCK_OFFSET + 0x10)
 #define CART_SHARED_VARIABLES_SLOTS      60      /* 240 bytes total */
+
+/* TT internal speaker (SHARED_VARIABLES slot 0, $FA4010): one word, the
+ * menu's TT speaker setting, published by the RP every frame
+ * (lynxemu.cpp): 0 = off, 1 = on. Zero, as the erased region starts, is
+ * off, the default. On a TT only, the m68k applies it at its next VBL by
+ * switching bit 6 of the YM's port A (.vbl_loop in userfw.s). Must match
+ * SPEAKER_ADDR in userfw.s. */
+#define CART_SPEAKER_OFFSET              CART_SHARED_VARIABLES_OFFSET  /* $4010 */
 
 /* 16-entry ST palette published by the RP, applied by the m68k VBL
  * handler to $FFFF8240..$FFFF825E each frame. Format: 16 contiguous

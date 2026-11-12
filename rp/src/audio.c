@@ -1,4 +1,7 @@
-/**
+/*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * File: audio.c
  * Description: Cart-shared audio buffer producer.
  *
@@ -69,12 +72,17 @@ void audio_set_mode(audio_mode_t mode) {
 audio_mode_t audio_get_mode(void) { return s_audio_mode; }
 
 /* Sound-capability report window (SNDCAP_WINDOW_BASE in userfw.s): the
- * m68k reads $FB8600 + has_dma once per VBL, having probed the _SND
- * cookie at boot. Decoding it here rather than in the ROM3 dispatcher
- * keeps the window address and the bit-to-back-end mapping with the
- * module that owns audio_mode_t and the refill sizes. */
+ * m68k reads $FB8600 + its SNDCAP bits once per VBL, having probed the
+ * _SND and _MCH cookies at boot. Decoding it here rather than in the
+ * ROM3 dispatcher keeps the window address and the bit-to-back-end
+ * mapping with the module that owns audio_mode_t and the refill sizes. */
 #define AUDIO_SNDCAP_HIBYTE 0x8600u
 #define AUDIO_WINDOW_HIMASK 0xFF00u
+
+/* The report's bits (SNDCAP_* in userfw.s): DMA sound, and a TT, whose
+ * internal speaker the m68k switches for the menu. */
+#define AUDIO_SNDCAP_DMA        0x01u
+#define AUDIO_SNDCAP_TT_SPEAKER 0x02u
 
 /* Buffer-length report (SNDLEN_WINDOW_BASE in userfw.s): while STE DMA
  * sound is running the m68k measures how much the chip actually eats
@@ -105,10 +113,20 @@ void audio_set_fill_bytes(uint32_t bytes) {
   s_fill_bytes = bytes;
 }
 
+/* Latched: the machine cannot stop being a TT, and a list of menu items
+ * that only ever grows keeps the menu's selection valid. */
+static bool s_tt_speaker;
+
+bool audio_has_tt_speaker(void) { return s_tt_speaker; }
+
 void audio_consume_rom3_sample(uint16_t addr_lsb) {
   const uint16_t window = addr_lsb & AUDIO_WINDOW_HIMASK;
   if (window == AUDIO_SNDCAP_HIBYTE) {
-    audio_set_mode((addr_lsb & 1u) ? AUDIO_MODE_DMA : AUDIO_MODE_YM);
+    audio_set_mode((addr_lsb & AUDIO_SNDCAP_DMA) ? AUDIO_MODE_DMA
+                                                 : AUDIO_MODE_YM);
+    if (addr_lsb & AUDIO_SNDCAP_TT_SPEAKER) {
+      s_tt_speaker = true;
+    }
   } else if (window == AUDIO_SNDLEN_HIBYTE) {
     audio_set_fill_bytes(AUDIO_SNDLEN_BIAS + (uint32_t)(addr_lsb & 0xFFu));
   }

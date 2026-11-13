@@ -240,7 +240,7 @@ YM_REG_CHB_VOL        equ 9                  ; channel B volume (low 4 bits)
 YM_MIXER_DAC_CHA      equ $FE                ; tone A enabled, all other tones/noise off, ports out
 YM_MIXER_DAC_AB       equ $FC                ; tones A AND B enabled, tone C off, all noise off, ports out (Ghostbusters dual-channel fake DAC)
 YM_REG_PORT_A         equ 14                 ; I/O port A: floppy selects, RTS/DTR, printer strobe, bits 6/7 per machine
-YM_PORTA_TT_SPEAKER   equ 6                  ; TT: internal speaker enable, active low (0 = speaker off)
+YM_PORTA_TT_SPEAKER   equ 6                  ; TT: set = internal speaker off; TOS leaves it clear (on)
 
 ; The menu's TT speaker setting, published by the RP (cart_shared.h
 ; CART_SPEAKER_OFFSET, SHARED_VARIABLES slot 0; must match): one word,
@@ -873,10 +873,10 @@ userfw:
     movem.l (a5), d0-d7
     movem.l d0-d7, PALETTE_BASE.w
 
-    ; The TT's internal speaker, as the menu has it (SPEAKER_ADDR). Its
-    ; enable is bit 6 of the YM's port A, active low: the TT030 hardware
-    ; reference lists it as "*Speaker Disable (0 disables internal
-    ; speaker)". Only on a TT, and only when the setting has changed
+    ; The TT's internal speaker, as the menu has it (SPEAKER_ADDR).
+    ; Setting bit 6 of the YM's port A switches it off; TOS leaves it
+    ; clear, with the speaker on, as the Booster's own screen has it and a
+    ; real TT confirms. Only on a TT, and only when the setting has changed
     ; (UFW_SPK_STATE starts at neither, so the first VBL applies it). The
     ; other port A bits are the floppy selects, the printer strobe,
     ; RTS/DTR and the LAN select, so this is a read-modify-write.
@@ -898,10 +898,10 @@ userfw:
     ori.w   #$0700, sr
     move.b  #YM_REG_PORT_A, (a2)
     move.b  (a2), d0                      ; port A as it stands
-    bclr    #YM_PORTA_TT_SPEAKER, d0      ; off...
+    bset    #YM_PORTA_TT_SPEAKER, d0      ; off...
     tst.b   d1
     beq.s   .spk_write
-    bset    #YM_PORTA_TT_SPEAKER, d0      ; ...or on
+    bclr    #YM_PORTA_TT_SPEAKER, d0      ; ...or on
 .spk_write:
     move.b  d0, 2(a2)                     ; YM_DATA
     move.b  #YM_REG_CHA_VOL, (a2)         ; reg 8 latched again for Timer-B

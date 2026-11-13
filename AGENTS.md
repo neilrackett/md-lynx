@@ -475,11 +475,14 @@ the first cartridge, and it opens on that first cartridge with the settings
 scrolled above it.
 
 **TT speaker.** On a TT only, the menu has a **TT SPEAKER** setting (OFF, the
-default, or ON) for the TT's internal speaker, as MD/Speccy has. Its enable is
-bit 6 of the YM's port A, **active low**: the TT030 Hardware Reference
-Manual's port A table reads "*Speaker Disable (0 disables internal speaker)"
-(Hatari doesn't emulate the speaker). Don't reuse this on a Falcon without
-checking its polarity.
+default, or ON) for the TT's internal speaker, as MD/Speccy has.
+**Setting bit 6 of the YM's port A switches it off**; TOS leaves the
+bit clear, with the speaker on. That is the SidecarTridge Booster's
+polarity (`rp2-booster-bootloader`, `term/atarist/src/main.s`), and a
+real TT confirmed it: before v1.1.4 this had it the other way round,
+so the default, off, left the speaker on. Hatari doesn't emulate the
+speaker, so only hardware can tell. Don't reuse this on a Falcon
+without checking its polarity.
 
 - `userfw.s` finds a TT from `_MCH` (high word 2) with a second inline jar
   walk beside the `_SND` one, and reports it as bit 1 of SNDCAP;
